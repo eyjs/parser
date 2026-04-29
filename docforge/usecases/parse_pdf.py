@@ -463,6 +463,10 @@ def _process_single_page(
                 clean_blocks, col_layout,
             )
 
+        # Split blocks where heading + body are concatenated
+        from docforge.processing.block_splitter import split_heading_body
+        clean_blocks = split_heading_body(clean_blocks)
+
         # Post-processing order
         if page_type == PageType.DIGITAL:
             classified_blocks: list[TextBlock] = []

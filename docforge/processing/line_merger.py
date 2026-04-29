@@ -192,6 +192,11 @@ def _should_split(
 
     # --- Split conditions (any match -> new block) ---
 
+    # Previous block is a heading — next block is always separate
+    prev_type, _ = classify_block(prev_text, prev.font.size, prev.font.is_bold, avg_font_size)
+    if prev_type == BlockType.HEADING:
+        return True
+
     # Structure pattern detected in next line
     block_type, level = classify_block(curr_text, curr.font.size, curr.font.is_bold, avg_font_size)
     if block_type == BlockType.HEADING:
