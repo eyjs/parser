@@ -62,7 +62,7 @@ from docforge.usecases.ocr_factory import create_ocr_engine
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from docforge.domain.ports import VisionLLMEngine
+    from docforge.domain.ports import MorphemeAnalyzer, VisionLLMEngine
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,18 @@ def parse_pdf(
 
     reader = PyMuPDFReader()
     ocr_engine = create_ocr_engine(config.ocr_backend)
+
+    # Create morpheme analyzer once and reuse across all pages
+    try:
+        from docforge.adapters.morpheme_analyzer import KiwiMorphemeAnalyzer
+        morpheme_analyzer = KiwiMorphemeAnalyzer()
+        if not morpheme_analyzer.is_available():
+            from docforge.adapters.morpheme_analyzer import NullMorphemeAnalyzer
+            morpheme_analyzer = NullMorphemeAnalyzer()
+    except Exception:
+        from docforge.adapters.morpheme_analyzer import NullMorphemeAnalyzer
+        morpheme_analyzer = NullMorphemeAnalyzer()
+        logger.info("Morpheme analyzer unavailable, heading split disabled")
 
     # Check preprocessing availability once (avoid per-worker ImportError try-catch)
     preprocessing_available = False
@@ -189,6 +201,7 @@ def parse_pdf(
             llm_engine=llm_engine,
             log_fn=_log,
             total_pages=total_pages,
+            morpheme_analyzer=morpheme_analyzer,
         )
 
     raw_results: list[tuple[int, _PageResult]] = []
@@ -364,6 +377,7 @@ def _process_single_page(
     llm_engine: VisionLLMEngine | None,
     log_fn: Callable[[str], None],
     total_pages: int,
+    morpheme_analyzer: MorphemeAnalyzer | None = None,
 ) -> _PageResult:
     """Process a single page. Opens its own doc/plumber handles for thread safety."""
     from docforge.adapters.image_converter import pil_to_raw_image
@@ -465,7 +479,7 @@ def _process_single_page(
             )
 
         # Split blocks where heading + body are concatenated
-        clean_blocks = split_heading_body(clean_blocks)
+        clean_blocks = split_heading_body(clean_blocks, morpheme_analyzer=morpheme_analyzer)
 
         # Post-processing order
         if page_type == PageType.DIGITAL:

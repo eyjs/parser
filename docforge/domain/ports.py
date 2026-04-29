@@ -5,6 +5,7 @@ Adapters implement these protocols so the domain never depends on external libra
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -14,6 +15,28 @@ from docforge.domain.value_objects import (
     PreprocessingDecision,
     RawImage,
 )
+
+
+@dataclass(frozen=True)
+class MorphemeToken:
+    """Immutable value object representing a single morpheme from analysis."""
+
+    form: str      # 형태소 원형 ("보험", "계약자")
+    tag: str       # 품사 태그 ("NNG", "NNP", "JKG", "EF" 등)
+    start: int     # 원문에서의 시작 위치 (문자 인덱스)
+    length: int    # 형태소 길이
+
+
+class MorphemeAnalyzer(Protocol):
+    """Port for morpheme analysis — tokenize Korean text into morphemes."""
+
+    def tokenize(self, text: str) -> list[MorphemeToken]:
+        """Tokenize text into morpheme tokens."""
+        ...
+
+    def is_available(self) -> bool:
+        """Check if the analyzer backend is installed and ready."""
+        ...
 
 # Opaque type aliases for adapter-specific handles.
 # Concrete types live in adapters; the domain only sees `object`.
