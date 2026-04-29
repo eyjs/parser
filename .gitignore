@@ -40,9 +40,8 @@ htmlcov/
 # Build artifacts
 *.spec
 
-# Pipeline intermediate outputs (keep structure, ignore logs/temp)
-.pipeline/logs/
-.pipeline/test_output/
+# Pipeline intermediate outputs
+.pipeline/
 
 # Model weights / large files
 *.pt

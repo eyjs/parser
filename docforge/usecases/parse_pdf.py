@@ -36,6 +36,7 @@ from docforge.domain.models import (
     NoiseStats,
     PageContent,
     ParseResult,
+    RegionVLMRecord,
     Table,
     TextBlock,
 )
@@ -76,6 +77,7 @@ class _PageResult:
     is_toc: bool
     ocr_used: bool
     llm_record: LLMFallbackRecord | None = None
+    region_vlm_records: tuple[RegionVLMRecord, ...] = ()
 
 
 def parse_pdf(
@@ -154,8 +156,9 @@ def parse_pdf(
     reader.close(doc)
 
     # LLM fallback engine (opt-in, graceful skip if unavailable)
+    # Also used for region-level VLM table routing when region_vlm_enabled
     llm_engine: VisionLLMEngine | None = None
-    if config.llm_fallback_enabled:
+    if config.llm_fallback_enabled or config.region_vlm_enabled:
         try:
             from docforge.adapters.vision_llm_engine import Qwen2VLMLXEngine
             _candidate = Qwen2VLMLXEngine()
@@ -214,6 +217,7 @@ def parse_pdf(
     toc_page_count = 0
     ocr_actually_used = False
     llm_fallback_records: list[LLMFallbackRecord] = []
+    all_region_vlm_records: list[RegionVLMRecord] = []
 
     for _idx, pr in raw_results:
         if pr.is_toc:
@@ -233,6 +237,7 @@ def parse_pdf(
             ocr_actually_used = True
         if pr.llm_record is not None:
             llm_fallback_records.append(pr.llm_record)
+        all_region_vlm_records.extend(pr.region_vlm_records)
 
     # Step 5: Merge cross-page tables
     _log("[5/6] Merging cross-page tables...")
@@ -278,6 +283,12 @@ def parse_pdf(
         logger.info(
             "LLM fallback page=%d adopted=%s reason=%s",
             record.page_num, record.adopted, record.reason,
+        )
+
+    for record in all_region_vlm_records:
+        logger.info(
+            "Region VLM page=%d replaced=%s score=%.3f reason=%s",
+            record.page_num, record.replaced, record.quality_score, record.reason,
         )
 
     noise_with_toc = NoiseStats(
@@ -335,6 +346,7 @@ def parse_pdf(
         stats=stats,
         profile=profile,
         llm_fallback_records=tuple(llm_fallback_records),
+        region_vlm_records=tuple(all_region_vlm_records),
     )
 
 
@@ -499,6 +511,35 @@ def _process_single_page(
                 image = reader.render_page_image(doc, page_idx, config.dpi)
                 page_tables = paddle_tables.extract_from_image(image)
 
+        # Region VLM: PaddleOCR TSR fallback for low-quality digital tables
+        if (
+            config.region_vlm_paddle_fallback
+            and page_type in (PageType.DIGITAL, PageType.MIXED)
+            and page_tables
+        ):
+            from docforge.processing.table_quality_scorer import score_table
+
+            has_low_quality = any(
+                score_table(tbl) < config.table_quality_threshold
+                for tbl in page_tables
+            )
+            if has_low_quality:
+                paddle_ext = PaddleTableExtractor()
+                if paddle_ext.is_available():
+                    img = reader.render_page_image(doc, page_idx, config.dpi)
+                    paddle_results = paddle_ext.extract_from_image(img)
+
+                    improved_tables: list[Table] = []
+                    for tbl in page_tables:
+                        tbl_score = score_table(tbl)
+                        if tbl_score < config.table_quality_threshold:
+                            best_paddle = _find_best_overlap(tbl, paddle_results)
+                            if best_paddle is not None and score_table(best_paddle) > tbl_score:
+                                improved_tables.append(best_paddle)
+                                continue
+                        improved_tables.append(tbl)
+                    page_tables = improved_tables
+
         # Filter leader dots
         filtered_tables: list[Table] = []
         for table in page_tables:
@@ -516,6 +557,35 @@ def _process_single_page(
                     needs_review=table.needs_review,
                 ))
         page_tables = filtered_tables
+
+        # Region VLM routing for low-quality tables
+        region_vlm_records: list[RegionVLMRecord] = []
+        if config.region_vlm_enabled and llm_engine is not None and page_tables:
+            from docforge.adapters.region_crop import crop_table_region
+            from docforge.processing.region_vlm_router import route_table_to_vlm
+            from docforge.processing.table_quality_scorer import score_table
+
+            vlm_improved_tables: list[Table] = []
+            for tbl in page_tables:
+                tbl_score = score_table(tbl)
+                if tbl_score < config.table_quality_threshold:
+                    cropped = crop_table_region(pdf_path, page_idx, tbl.bbox, config.dpi)
+                    if cropped is not None:
+                        vlm_table, vlm_record = route_table_to_vlm(
+                            cropped_image=cropped,
+                            original_bbox=tbl.bbox,
+                            quality_score=tbl_score,
+                            page_num=page_idx + 1,
+                            llm_engine=llm_engine,
+                            domain_hint=config.llm_domain_hint,
+                        )
+                        region_vlm_records.append(vlm_record)
+                        if vlm_table is not None:
+                            vlm_improved_tables.append(vlm_table)
+                            continue
+                vlm_improved_tables.append(tbl)
+
+            page_tables = vlm_improved_tables
 
         # Calculate page confidence
         page_confidence = confidence_scorer.score_page(
@@ -561,10 +631,39 @@ def _process_single_page(
             is_toc=False,
             ocr_used=page_ocr_used,
             llm_record=llm_record,
+            region_vlm_records=tuple(region_vlm_records),
         )
     finally:
         reader.close(doc)
         table_extractor.close(plumber_doc)
+
+
+def _find_best_overlap(target: Table, candidates: list[Table]) -> Table | None:
+    """Find the candidate table with the best BBox overlap to the target."""
+    best: Table | None = None
+    best_iou = 0.0
+
+    for candidate in candidates:
+        iou = _bbox_iou(target.bbox, candidate.bbox)
+        if iou > best_iou:
+            best_iou = iou
+            best = candidate
+
+    # Require at least 20% IoU to consider it a match
+    return best if best_iou > 0.2 else None
+
+
+def _bbox_iou(a: BBox, b: BBox) -> float:
+    """Compute Intersection over Union for two BBoxes."""
+    inter_x0 = max(a.x0, b.x0)
+    inter_y0 = max(a.y0, b.y0)
+    inter_x1 = min(a.x1, b.x1)
+    inter_y1 = min(a.y1, b.y1)
+
+    inter_area = max(0, inter_x1 - inter_x0) * max(0, inter_y1 - inter_y0)
+    union_area = a.area + b.area - inter_area
+
+    return inter_area / union_area if union_area > 0 else 0.0
 
 
 def _blocks_overlap(block_a: TextBlock, block_b: TextBlock) -> bool:

@@ -122,6 +122,16 @@ class LLMFallbackRecord:
 
 
 @dataclass(frozen=True)
+class RegionVLMRecord:
+    """Region-level VLM routing event record for audit logging."""
+    page_num: int
+    table_bbox: BBox
+    quality_score: float
+    replaced: bool
+    reason: str
+
+
+@dataclass(frozen=True)
 class ParseResult:
     """Complete parsing result."""
 
@@ -131,3 +141,4 @@ class ParseResult:
     stats: ParseStats
     profile: DocumentProfile
     llm_fallback_records: tuple[LLMFallbackRecord, ...] = ()
+    region_vlm_records: tuple[RegionVLMRecord, ...] = ()

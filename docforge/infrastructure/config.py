@@ -101,3 +101,8 @@ class ParserConfig:
     llm_confidence_margin: float = 0.05
     llm_char_loss_threshold: float = 0.8
     llm_domain_hint: str = "보험약관"
+
+    # Region-level VLM table routing
+    table_quality_threshold: float = 0.6
+    region_vlm_enabled: bool = True
+    region_vlm_paddle_fallback: bool = True
