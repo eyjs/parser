@@ -118,17 +118,24 @@ class TestImageQualityReport:
         assert report.needs_binarize(policy) is True
 
 
+def _dummy_report() -> ImageQualityReport:
+    return ImageQualityReport(
+        dpi_estimated=300.0, skew_angle=0.0, contrast_ratio=0.8,
+        noise_score=0.1, background_uniformity=0.1,
+    )
+
+
 class TestPreprocessingDecision:
     def test_skip_all_when_nothing_needed(self) -> None:
-        decision = PreprocessingDecision()
+        decision = PreprocessingDecision(quality_report=_dummy_report())
         assert decision.skip_all is True
 
     def test_not_skip_when_upscale_needed(self) -> None:
-        decision = PreprocessingDecision(apply_upscale=True)
+        decision = PreprocessingDecision(quality_report=_dummy_report(), apply_upscale=True)
         assert decision.skip_all is False
 
     def test_frozen(self) -> None:
-        decision = PreprocessingDecision()
+        decision = PreprocessingDecision(quality_report=_dummy_report())
         with pytest.raises(AttributeError):
             decision.apply_upscale = True  # type: ignore[misc]
 

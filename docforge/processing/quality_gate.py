@@ -6,10 +6,10 @@ Returns winning_blocks to prevent redundant OCR calls.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from docforge.domain.enums import SelectionReason
 from docforge.domain.models import TextBlock
+from docforge.domain.ports import OCREngine
 from docforge.domain.value_objects import (
     ImageQualityPolicy,
     QualityGateResult,
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 def quality_gate(
     original: RawImage,
     preprocessed: RawImage,
-    ocr_engine: Any,
+    ocr_engine: OCREngine,
     policy: ImageQualityPolicy,
 ) -> QualityGateResult:
     """Compare OCR results from original and preprocessed images.

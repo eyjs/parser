@@ -10,6 +10,7 @@ from docforge.domain.enums import DocumentComplexity, SelectionReason
 if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
+    from docforge.domain.models import TextBlock
 
 
 @dataclass(frozen=True)
@@ -122,12 +123,12 @@ class ImageQualityReport:
 class PreprocessingDecision:
     """Preprocessing decision based on quality diagnosis."""
 
+    quality_report: ImageQualityReport
     apply_upscale: bool = False
     apply_deskew: bool = False
     apply_contrast: bool = False
     apply_denoise: bool = False
     apply_binarize: bool = False
-    quality_report: ImageQualityReport | None = None
     skew_angle: float = 0.0
 
     @property
@@ -152,7 +153,7 @@ class QualityGateResult:
     preprocessed_char_count: int
     reason: SelectionReason
     reason_detail: str
-    winning_blocks: tuple[object, ...] = ()  # TextBlock tuple, typed as object to avoid circular import
+    winning_blocks: tuple[TextBlock, ...] = ()
 
 
 @dataclass(frozen=True)

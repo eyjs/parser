@@ -65,8 +65,8 @@ class AppleVisionOCREngine:
         # Full implementation for macOS
         try:
             return self._recognize_with_vision(image)
-        except Exception:
-            logger.error("Apple Vision recognition failed", exc_info=True)
+        except Exception as exc:
+            logger.warning("Apple Vision OCR failed: %s", exc, exc_info=True)
             return []
 
     def _recognize_with_vision(self, image: Any) -> list[TextBlock]:

@@ -101,48 +101,73 @@ def _estimate_dpi(gray: NDArray[np.uint8]) -> float:
 
 
 def _detect_skew(gray: NDArray[np.uint8]) -> float:
-    """Detect image skew angle using Hough Line Transform.
+    """Detect image skew angle using projection-profile variance.
+
+    Sweeps candidate angles from -15 to +15 degrees (0.5-degree steps) and
+    picks the angle whose horizontal projection has maximum variance (sharpest
+    text-line peaks). Pure numpy -- no OpenCV dependency.
 
     Returns:
-        Skew angle in degrees. 0.0 if no lines detected.
+        Skew angle in degrees. 0.0 if image is too small or no clear skew.
     """
-    import cv2
-
     h, w = gray.shape[:2]
     if h < 50 or w < 50:
         return 0.0
 
-    # Edge detection
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+    # Binarize: dark pixels = 1
+    threshold = float(np.mean(gray))
+    binary = (gray < threshold).astype(np.float64)
 
-    # Hough Line Transform (probabilistic)
-    lines = cv2.HoughLinesP(
-        edges,
-        rho=1,
-        theta=np.pi / 180,
-        threshold=100,
-        minLineLength=w // 4,
-        maxLineGap=20,
-    )
+    # Row indices centered at image middle
+    cy = h / 2.0
+    row_offsets = np.arange(h, dtype=np.float64) - cy  # (H,)
 
-    if lines is None or len(lines) == 0:
-        return 0.0
+    best_angle = 0.0
+    best_var = -1.0
 
-    # Calculate angles of detected lines
-    angles: list[float] = []
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        if abs(x2 - x1) < 1:
+    # Check angle 0 first. Then check outward from center so ties favor
+    # smaller absolute angles (prefer 0 when projections are similar).
+    candidates = [0] + [
+        s * d
+        for d in range(5, 151, 5)
+        for s in (1, -1)
+    ]  # 0, 0.5, -0.5, 1.0, -1.0, ... 15.0, -15.0
+
+    for angle_tenth in candidates:
+        angle_deg = angle_tenth / 10.0
+        tan_a = np.tan(np.radians(angle_deg))
+
+        # Per-row horizontal shift (simulate shearing)
+        shifts = np.round(row_offsets * tan_a).astype(np.int64)  # (H,)
+        max_shift = int(np.max(np.abs(shifts))) if len(shifts) > 0 else 0
+
+        # Restrict to rows that keep at least half the columns after shift
+        if max_shift >= w // 2:
             continue
-        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
-        # Only consider near-horizontal lines (within 15 degrees)
-        if abs(angle) < 15:
-            angles.append(angle)
 
-    if not angles:
-        return 0.0
+        # Build projection: use consistent column range to avoid bias
+        # After shearing, the valid column window shrinks by max_shift on each side
+        margin = max_shift
+        valid_w = w - 2 * margin
+        if valid_w < 10:
+            continue
 
-    return float(np.median(angles))
+        proj = np.zeros(h, dtype=np.float64)
+        for row_idx in range(h):
+            s = int(shifts[row_idx])
+            start = margin + s
+            end = margin + s + valid_w
+            start = max(0, min(start, w))
+            end = max(0, min(end, w))
+            if end > start:
+                proj[row_idx] = np.sum(binary[row_idx, start:end])
+
+        var = float(np.var(proj))
+        if var > best_var:
+            best_var = var
+            best_angle = angle_deg
+
+    return best_angle
 
 
 def _measure_contrast(gray: NDArray[np.uint8]) -> float:
@@ -168,15 +193,24 @@ def _measure_noise(gray: NDArray[np.uint8]) -> float:
     - 0.0 = clean (moderate Laplacian, well-defined edges)
     - 1.0 = very noisy (extreme Laplacian variance)
 
+    Pure numpy — uses 3x3 Laplacian kernel via array slicing (no cv2/scipy).
+
     Returns:
         Noise score (0.0 = clean, 1.0 = very noisy).
     """
-    import cv2
-
     if gray.size == 0:
         return 0.0
 
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    # 3x3 Laplacian kernel: [[0,1,0],[1,-4,1],[0,1,0]]
+    # Applied via numpy slicing instead of convolution
+    img = gray.astype(np.float64)
+    laplacian = (
+        img[:-2, 1:-1]   # top
+        + img[2:, 1:-1]  # bottom
+        + img[1:-1, :-2] # left
+        + img[1:-1, 2:]  # right
+        - 4.0 * img[1:-1, 1:-1]  # center
+    )
     lap_var = float(np.var(laplacian))
 
     # Normalize: typical document images have Laplacian variance 100-2000

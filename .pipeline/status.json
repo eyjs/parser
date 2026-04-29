@@ -1,9 +1,10 @@
 {
   "pipeline_id": "docforge-commercialization-phase1-2026",
   "started_at": "2026-04-29T10:00:00+09:00",
-  "status": "completed",
-  "current_phase": "done",
+  "status": "feedback_complete",
+  "current_phase": "integration",
   "requirement": ".pipeline/requirement.md",
+  "active_feedback": ".pipeline/feedback-002.md",
   "phases": {
     "requirement": { "status": "done" },
     "planning": { "status": "done" },
@@ -11,7 +12,27 @@
     "design": { "status": "skipped" },
     "implementation": { "status": "done", "tasks_completed": 9 },
     "review": { "status": "done", "verdict": "PASS" },
-    "integration": { "status": "done", "tests_passed": 200 },
+    "integration": { "status": "done", "tests_passed": 201 },
     "documentation": { "status": "done" }
-  }
+  },
+  "feedback_cycles": [
+    {
+      "id": "feedback-002",
+      "file": ".pipeline/feedback-002.md",
+      "type": "bugfix",
+      "created_at": "2026-04-29T00:00:00+09:00",
+      "status": "done",
+      "items": {
+        "critical": 4,
+        "important": 11,
+        "total": 15,
+        "resolved": 15
+      },
+      "test_results": {
+        "passed": 201,
+        "errors": 4,
+        "error_reason": "flask not installed (test_worker_queue)"
+      }
+    }
+  ]
 }

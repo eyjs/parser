@@ -90,12 +90,13 @@ def parse_pdf(
     ocr_engine = create_ocr_engine(config.ocr_backend)
 
     # Initialize preprocessing pipeline (for scanned pages)
+    from docforge.adapters.image_converter import pil_to_raw_image
+
     preprocessing_available = False
     scanned_preprocessor = None
     quality_policy = ImageQualityPolicy()
     try:
         from docforge.adapters.opencv_preprocessor import OpenCVPreprocessor
-        from docforge.adapters.image_converter import pil_to_raw_image
         from docforge.processing.preprocessing_router import process_scanned_page
         scanned_preprocessor = OpenCVPreprocessor()
         preprocessing_available = True
@@ -186,13 +187,13 @@ def parse_pdf(
 
         if page_type == PageType.SCANNED and use_ocr and ocr_available:
             image = reader.render_page_image(doc, page_idx, config.dpi)
+            raw_img = pil_to_raw_image(image)
             if preprocessing_available and scanned_preprocessor is not None:
-                raw_img = pil_to_raw_image(image)
                 ocr_blocks, _decision, page_gate_result = process_scanned_page(
                     raw_img, ocr_engine, scanned_preprocessor, quality_policy,
                 )
             else:
-                ocr_blocks = ocr_engine.recognize(image)
+                ocr_blocks = ocr_engine.recognize(raw_img)
             ocr_blocks = ocr_corrector.correct_blocks(ocr_blocks, config)
             blocks.extend(ocr_blocks)
             if ocr_blocks:
@@ -201,13 +202,13 @@ def parse_pdf(
         if page_type == PageType.MIXED and use_ocr and ocr_available:
             # For mixed pages, also OCR and merge
             image = reader.render_page_image(doc, page_idx, config.dpi)
+            raw_img = pil_to_raw_image(image)
             if preprocessing_available and scanned_preprocessor is not None:
-                raw_img = pil_to_raw_image(image)
                 ocr_blocks, _decision, page_gate_result = process_scanned_page(
                     raw_img, ocr_engine, scanned_preprocessor, quality_policy,
                 )
             else:
-                ocr_blocks = ocr_engine.recognize(image)
+                ocr_blocks = ocr_engine.recognize(raw_img)
             ocr_blocks = ocr_corrector.correct_blocks(ocr_blocks, config)
             # Only add OCR blocks that don't overlap with digital text
             for ob in ocr_blocks:
@@ -234,25 +235,44 @@ def parse_pdf(
                 clean_blocks, col_layout,
             )
 
-        # Classify text structure
-        classified_blocks: list[TextBlock] = []
-        for block in clean_blocks:
-            block_type, heading_level = text_structurer.classify_block(
-                block.text, block.font.size, block.font.is_bold, avg_font_size, config
+        # Post-processing order depends on page type:
+        # DIGITAL: classify structure first, then merge lines
+        # SCANNED/MIXED: merge lines first (OCR output needs grouping), then classify
+        if page_type == PageType.DIGITAL:
+            classified_blocks: list[TextBlock] = []
+            for block in clean_blocks:
+                block_type, heading_level = text_structurer.classify_block(
+                    block.text, block.font.size, block.font.is_bold, avg_font_size, config
+                )
+                classified_blocks.append(TextBlock(
+                    text=block.text,
+                    bbox=block.bbox,
+                    font=block.font,
+                    block_type=block_type,
+                    heading_level=heading_level,
+                    confidence=block.confidence,
+                ))
+            merged_blocks = line_merger.merge_lines(
+                classified_blocks, avg_font_size, avg_line_gap, config
             )
-            classified_blocks.append(TextBlock(
-                text=block.text,
-                bbox=block.bbox,
-                font=block.font,
-                block_type=block_type,
-                heading_level=heading_level,
-                confidence=block.confidence,
-            ))
-
-        # Merge lines into paragraphs
-        merged_blocks = line_merger.merge_lines(
-            classified_blocks, avg_font_size, avg_line_gap, config
-        )
+        else:
+            # SCANNED / MIXED: merge first, then classify
+            merged_first = line_merger.merge_lines(
+                clean_blocks, avg_font_size, avg_line_gap, config
+            )
+            merged_blocks = []
+            for block in merged_first:
+                block_type, heading_level = text_structurer.classify_block(
+                    block.text, block.font.size, block.font.is_bold, avg_font_size, config
+                )
+                merged_blocks.append(TextBlock(
+                    text=block.text,
+                    bbox=block.bbox,
+                    font=block.font,
+                    block_type=block_type,
+                    heading_level=heading_level,
+                    confidence=block.confidence,
+                ))
 
         # Extract tables (pass page dimensions for layout table filtering)
         page_tables = table_extractor.extract_from_page(
@@ -408,28 +428,6 @@ def parse_pdf(
         stats=stats,
         profile=profile,
     )
-
-
-def _create_ocr_engine() -> object:
-    """Create the best available OCR engine (EasyOCR preferred, PaddleOCR fallback)."""
-    try:
-        from docforge.adapters.easyocr_engine import EasyOCREngine
-        engine = EasyOCREngine()
-        if engine.is_available():
-            return engine
-    except Exception:
-        pass
-
-    try:
-        from docforge.adapters.paddle_ocr import PaddleOCREngine
-        engine = PaddleOCREngine()
-        if engine.is_available():
-            return engine
-    except Exception:
-        pass
-
-    from docforge.adapters.easyocr_engine import EasyOCREngine
-    return EasyOCREngine()
 
 
 def _blocks_overlap(block_a: TextBlock, block_b: TextBlock) -> bool:

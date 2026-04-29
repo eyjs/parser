@@ -11,10 +11,10 @@ This module coordinates the full preprocessing pipeline:
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from docforge.domain.enums import SelectionReason
 from docforge.domain.models import TextBlock
+from docforge.domain.ports import ImagePreprocessor, OCREngine
 from docforge.domain.value_objects import (
     ImageQualityPolicy,
     PreprocessingDecision,
@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 def process_scanned_page(
     image: RawImage,
-    ocr_engine: Any,
-    preprocessor: Any,
+    ocr_engine: OCREngine,
+    preprocessor: ImagePreprocessor,
     policy: ImageQualityPolicy,
 ) -> tuple[list[TextBlock], PreprocessingDecision, QualityGateResult | None]:
     """Process a scanned page through the preprocessing pipeline.

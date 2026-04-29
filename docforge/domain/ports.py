@@ -6,7 +6,7 @@ Adapters implement these protocols so the domain never depends on external libra
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from docforge.domain.models import Table, TextBlock
 from docforge.domain.value_objects import (
@@ -15,39 +15,44 @@ from docforge.domain.value_objects import (
     RawImage,
 )
 
+# Opaque type aliases for adapter-specific handles.
+# Concrete types live in adapters; the domain only sees `object`.
+PDFDoc = object
+"""Opaque PDF document handle returned by PDFReader.open()."""
+
 
 class PDFReader(Protocol):
     """Port for reading PDF documents."""
 
-    def open(self, path: Path) -> Any:
+    def open(self, path: Path) -> object:
         """Open a PDF file and return a document handle."""
         ...
 
-    def get_page_count(self, doc: Any) -> int:
+    def get_page_count(self, doc: object) -> int:
         """Return the total number of pages."""
         ...
 
-    def extract_text_blocks(self, doc: Any, page_idx: int) -> list[TextBlock]:
+    def extract_text_blocks(self, doc: object, page_idx: int) -> list[TextBlock]:
         """Extract text blocks with font info and bounding boxes."""
         ...
 
-    def extract_raw_text(self, doc: Any, page_idx: int) -> str:
+    def extract_raw_text(self, doc: object, page_idx: int) -> str:
         """Extract plain text from a page."""
         ...
 
-    def render_page_image(self, doc: Any, page_idx: int, dpi: int) -> Any:
-        """Render a page as a PIL Image."""
+    def render_page_image(self, doc: object, page_idx: int, dpi: int) -> object:
+        """Render a page as an image. Concrete type is adapter-specific."""
         ...
 
-    def get_page_dimensions(self, doc: Any, page_idx: int) -> tuple[float, float]:
+    def get_page_dimensions(self, doc: object, page_idx: int) -> tuple[float, float]:
         """Return (width, height) of a page."""
         ...
 
-    def get_page_images(self, doc: Any, page_idx: int) -> list[dict[str, Any]]:
+    def get_page_images(self, doc: object, page_idx: int) -> list[dict[str, object]]:
         """Return list of image info dicts with bbox and area."""
         ...
 
-    def close(self, doc: Any) -> None:
+    def close(self, doc: object) -> None:
         """Close the document handle."""
         ...
 
@@ -55,8 +60,8 @@ class PDFReader(Protocol):
 class OCREngine(Protocol):
     """Port for OCR text recognition."""
 
-    def recognize(self, image: Any) -> list[TextBlock]:
-        """Run OCR on a PIL Image and return text blocks."""
+    def recognize(self, image: RawImage | object) -> list[TextBlock]:
+        """Run OCR on an image and return text blocks."""
         ...
 
     def is_available(self) -> bool:
@@ -67,11 +72,11 @@ class OCREngine(Protocol):
 class TableExtractor(Protocol):
     """Port for table extraction."""
 
-    def extract_from_page(self, source: Any, page_idx: int) -> list[Table]:
+    def extract_from_page(self, source: object, page_idx: int) -> list[Table]:
         """Extract tables from a PDF page (digital PDF)."""
         ...
 
-    def extract_from_image(self, image: Any) -> list[Table]:
+    def extract_from_image(self, image: RawImage | object) -> list[Table]:
         """Extract tables from a page image (scanned PDF)."""
         ...
 
@@ -98,7 +103,7 @@ class FormatParser(Protocol):
         """Check if this parser can handle the given file."""
         ...
 
-    def parse(self, path: Path) -> Any:
+    def parse(self, path: Path) -> object:
         """Parse the document and return a ParseResult."""
         ...
 

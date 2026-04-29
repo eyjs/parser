@@ -13,6 +13,7 @@ from docforge.domain.value_objects import (
     BBox,
     FontInfo,
     ImageQualityPolicy,
+    ImageQualityReport,
     PreprocessingDecision,
     QualityGateResult,
     RawImage,
@@ -20,6 +21,13 @@ from docforge.domain.value_objects import (
 from docforge.adapters.opencv_preprocessor import OpenCVPreprocessor
 from docforge.processing.quality_gate import quality_gate, _avg_confidence, _total_chars
 from docforge.processing.preprocessing_router import process_scanned_page
+
+
+def _dummy_report() -> ImageQualityReport:
+    return ImageQualityReport(
+        dpi_estimated=300.0, skew_angle=0.0, contrast_ratio=0.8,
+        noise_score=0.1, background_uniformity=0.1,
+    )
 
 
 def _make_raw_image(w: int = 200, h: int = 200, value: int = 200) -> RawImage:
@@ -42,7 +50,7 @@ class TestOpenCVPreprocessor:
         """Skip_all decision should return identical-sized image."""
         preprocessor = OpenCVPreprocessor()
         image = _make_raw_image()
-        decision = PreprocessingDecision()  # all False
+        decision = PreprocessingDecision(quality_report=_dummy_report())  # all False
         result = preprocessor.preprocess(image, decision)
         assert result.width == image.width
         assert result.height == image.height
@@ -50,35 +58,35 @@ class TestOpenCVPreprocessor:
     def test_preprocess_contrast(self) -> None:
         preprocessor = OpenCVPreprocessor()
         image = _make_raw_image(value=128)
-        decision = PreprocessingDecision(apply_contrast=True)
+        decision = PreprocessingDecision(quality_report=_dummy_report(), apply_contrast=True)
         result = preprocessor.preprocess(image, decision)
         assert isinstance(result, RawImage)
 
     def test_preprocess_denoise(self) -> None:
         preprocessor = OpenCVPreprocessor()
         image = _make_raw_image()
-        decision = PreprocessingDecision(apply_denoise=True)
+        decision = PreprocessingDecision(quality_report=_dummy_report(), apply_denoise=True)
         result = preprocessor.preprocess(image, decision)
         assert isinstance(result, RawImage)
 
     def test_preprocess_deskew(self) -> None:
         preprocessor = OpenCVPreprocessor()
         image = _make_raw_image()
-        decision = PreprocessingDecision(apply_deskew=True, skew_angle=2.0)
+        decision = PreprocessingDecision(quality_report=_dummy_report(), apply_deskew=True, skew_angle=2.0)
         result = preprocessor.preprocess(image, decision)
         assert isinstance(result, RawImage)
 
     def test_preprocess_binarize(self) -> None:
         preprocessor = OpenCVPreprocessor()
         image = _make_raw_image(value=128)
-        decision = PreprocessingDecision(apply_binarize=True)
+        decision = PreprocessingDecision(quality_report=_dummy_report(), apply_binarize=True)
         result = preprocessor.preprocess(image, decision)
         assert result.channels == 1
 
     def test_preprocess_upscale(self) -> None:
         preprocessor = OpenCVPreprocessor()
         image = _make_raw_image(w=100, h=100)
-        decision = PreprocessingDecision(apply_upscale=True)
+        decision = PreprocessingDecision(quality_report=_dummy_report(), apply_upscale=True)
         result = preprocessor.preprocess(image, decision)
         assert result.width > image.width
         assert result.height > image.height
@@ -87,7 +95,7 @@ class TestOpenCVPreprocessor:
         preprocessor = OpenCVPreprocessor()
         image = _make_raw_image(value=128)
         original_data = image.data.copy()
-        decision = PreprocessingDecision(apply_contrast=True, apply_denoise=True)
+        decision = PreprocessingDecision(quality_report=_dummy_report(), apply_contrast=True, apply_denoise=True)
         preprocessor.preprocess(image, decision)
         np.testing.assert_array_equal(image.data, original_data)
 
@@ -205,3 +213,50 @@ class TestPreprocessingRouter:
         assert gate is not None
         assert gate.reason == SelectionReason.PREPROCESSING_FAILED
         assert len(blocks) == 1
+
+
+class TestQualityGateEdgeCases:
+    """Edge case tests for quality gate decisions."""
+
+    def _mock_ocr(self, blocks_orig: list[TextBlock], blocks_prep: list[TextBlock]) -> MagicMock:
+        engine = MagicMock()
+        engine.recognize = MagicMock(side_effect=[blocks_orig, blocks_prep])
+        return engine
+
+    def test_prep_char_gain_routes_to_preprocessed(self) -> None:
+        """Given: preprocessing produces significantly more characters with equal confidence.
+        When: quality gate is called.
+        Then: preprocessed result is selected with PREP_CHAR_GAIN reason.
+        """
+        # Original: short text
+        orig = [_make_block("hi", 0.9)]
+        # Preprocessed: much longer text (gain > 1.2x threshold), same confidence
+        prep = [_make_block("hello world extended text", 0.9)]
+        engine = self._mock_ocr(orig, prep)
+        policy = ImageQualityPolicy()
+
+        result = quality_gate(
+            _make_raw_image(), _make_raw_image(), engine, policy
+        )
+        assert result.reason == SelectionReason.PREP_CHAR_GAIN
+        assert result.use_preprocessed is True
+        assert result.preprocessed_char_count > result.original_char_count
+
+    def test_both_empty_results_handled_gracefully(self) -> None:
+        """Given: both original and preprocessed OCR produce 0 characters.
+        When: quality gate is called.
+        Then: returns without error, selects original (default), 0 chars on both sides.
+        """
+        orig: list[TextBlock] = []
+        prep: list[TextBlock] = []
+        engine = self._mock_ocr(orig, prep)
+        policy = ImageQualityPolicy()
+
+        result = quality_gate(
+            _make_raw_image(), _make_raw_image(), engine, policy
+        )
+        # Both empty: should not crash, default to original
+        assert result.original_char_count == 0
+        assert result.preprocessed_char_count == 0
+        assert result.use_preprocessed is False
+        assert result.reason == SelectionReason.ORIGINAL_DEFAULT

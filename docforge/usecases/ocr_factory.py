@@ -59,29 +59,35 @@ def create_ocr_engine(backend: str = "auto") -> Any:
 
 
 def _create_auto() -> Any:
-    """Try backends in priority order, return first available."""
-    # EasyOCR first (most widely available)
-    engine = _create_easyocr()
-    if engine is not None and engine.is_available():
-        logger.info("OCR backend: easyocr (auto)")
-        return engine
+    """Try backends in platform-dependent priority order.
 
-    # PaddleOCR as fallback
-    engine = _create_paddleocr()
-    if engine is not None and engine.is_available():
-        logger.info("OCR backend: paddleocr (auto)")
-        return engine
+    macOS: Apple Vision -> EasyOCR -> PaddleOCR
+    Others: EasyOCR -> PaddleOCR -> Apple Vision
+    """
+    import platform
 
-    # Apple Vision (macOS only)
-    engine = _create_apple_vision()
-    if engine is not None and engine.is_available():
-        logger.info("OCR backend: apple_vision (auto)")
-        return engine
+    if platform.system() == "Darwin":
+        order = [
+            ("apple_vision", _create_apple_vision),
+            ("easyocr", _create_easyocr),
+            ("paddleocr", _create_paddleocr),
+        ]
+    else:
+        order = [
+            ("easyocr", _create_easyocr),
+            ("paddleocr", _create_paddleocr),
+            ("apple_vision", _create_apple_vision),
+        ]
 
-    # Return a dummy engine that reports unavailable
-    logger.warning("No OCR backend available")
-    from docforge.adapters.easyocr_engine import EasyOCREngine
-    return EasyOCREngine()
+    for name, factory in order:
+        engine = factory()
+        if engine is not None and engine.is_available():
+            logger.info("OCR backend: %s (auto)", name)
+            return engine
+
+    raise RuntimeError(
+        "No OCR backend available: all backends failed to initialize"
+    )
 
 
 def _create_easyocr() -> Any:

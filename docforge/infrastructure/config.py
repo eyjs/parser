@@ -44,7 +44,7 @@ class ParserConfig:
     ocr_backend: str = "auto"  # "auto", "easyocr", "apple_vision", "paddleocr"
     ocr_confidence_low: float = 0.8
     ocr_confidence_fail: float = 0.5
-    dpi: int = 200
+    dpi: int = 300
 
     # Rendering
     verify_dpi: int = 150
