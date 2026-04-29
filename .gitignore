@@ -62,5 +62,8 @@ uploads/
 *.jpg
 *.jpeg
 
+# Output
+output/
+
 # One-off scripts
 test_ocr_check.py
