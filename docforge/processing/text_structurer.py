@@ -36,6 +36,14 @@ _ITEM_PATTERNS = [
     re.compile(r"^[ⅰ-ⅹ]\)\s*"),
 ]
 
+# Numbering hierarchy for heading-level adjustment when font is heading-like.
+# Higher-depth patterns get deeper heading levels to preserve parent→child structure.
+_NUMBERING_DEPTH: list[tuple[re.Pattern[str], int]] = [
+    (re.compile(r"^[가나다라마바사아자차카타파하]\.\s+"), 2),   # 가. 나. → parent + 2
+    (re.compile(r"^\(\d+\)\s*"), 2),                           # (1) (2) → parent + 2
+    (re.compile(r"^[가나다라마바사아자차카타파하]\)\s*"), 3),   # 가) 나) → parent + 3
+]
+
 
 def classify_block(
     text: str,
@@ -45,13 +53,6 @@ def classify_block(
     config: ParserConfig | None = None,
 ) -> tuple[BlockType, int]:
     """Classify a text block into its structural type and heading level.
-
-    Args:
-        text: The text content to classify.
-        font_size: Font size of the block.
-        is_bold: Whether the block is bold.
-        avg_font_size: Average font size of the document.
-        config: Parser configuration (optional).
 
     Returns:
         Tuple of (BlockType, heading_level). heading_level is 0 for non-headings.
@@ -68,12 +69,19 @@ def classify_block(
         if pattern.match(stripped):
             return block_type, level
 
-    # Font-based heading detection (when no pattern matches)
+    # Font-based heading detection (when no structural pattern matches)
     if avg_font_size > 0:
+        base_level = 0
         if font_size > avg_font_size * config.heading_bold_ratio and is_bold:
-            return BlockType.HEADING, 2
-        if font_size > avg_font_size * config.heading_size_ratio:
-            return BlockType.HEADING, 3
+            base_level = 2
+        elif font_size > avg_font_size * config.heading_size_ratio:
+            base_level = 3
+
+        if base_level > 0:
+            for pattern, depth_offset in _NUMBERING_DEPTH:
+                if pattern.match(stripped):
+                    return BlockType.HEADING, min(base_level + depth_offset, 6)
+            return BlockType.HEADING, base_level
 
     # Clause (circled numbers)
     if _CLAUSE_PATTERN.match(stripped):
