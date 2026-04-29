@@ -9,12 +9,44 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from docforge.domain.enums import BlockType
 from docforge.domain.models import Table, TextBlock
 from docforge.domain.value_objects import (
     ImageQualityReport,
     PreprocessingDecision,
     RawImage,
 )
+
+
+class DomainProfile(Protocol):
+    """Domain-specific text structure profile.
+
+    Encapsulates regex patterns and classification rules for a particular
+    document domain (Korean legal, English academic, etc).
+
+    Implementations live in ``docforge.processing.domain_profiles`` and
+    are injected into ``text_structurer.classify_block`` so the structurer
+    itself stays domain-agnostic.
+    """
+
+    def classify(
+        self,
+        text: str,
+        font_size: float,
+        is_bold: bool,
+        avg_font_size: float,
+        heading_bold_ratio: float,
+        heading_size_ratio: float,
+    ) -> tuple[BlockType, int]:
+        """Classify text and return ``(block_type, heading_level)``.
+
+        ``heading_level`` is 0 for non-heading blocks.
+        """
+        ...
+
+    def name(self) -> str:
+        """Return profile identifier for logging/debugging."""
+        ...
 
 
 @dataclass(frozen=True)

@@ -1,58 +1,23 @@
-"""Korean legal document structure recognition.
+"""Text structure recognition — domain-agnostic facade.
 
-Hierarchy: pyeon(h1) > jang(h2) > jeol(h3) > gwan(h3) > jo(h4) > hang > ho > mok
+Delegates classification to a ``DomainProfile`` implementation. The default
+profile (``KoreanLegalProfile``) preserves the historical behaviour for
+Korean legal/insurance documents; other domains are selected by injecting
+a different profile (e.g. ``EnglishAcademicProfile``).
+
+This module no longer owns any regex constants — they live in
+``docforge.processing.domain_profiles``.
 """
 
 from __future__ import annotations
 
-import re
+from typing import TYPE_CHECKING
 
 from docforge.domain.enums import BlockType
 from docforge.infrastructure.config import ParserConfig
 
-
-# Structure patterns ordered by priority (highest first)
-_HEADING_PATTERNS: list[tuple[re.Pattern[str], int, BlockType]] = [
-    (re.compile(r"^제\s*\d+\s*편\b"), 1, BlockType.HEADING),
-    (re.compile(r"^제\s*\d+\s*장\b"), 2, BlockType.HEADING),
-    (re.compile(r"^제\s*\d+\s*절\b"), 3, BlockType.HEADING),
-    (re.compile(r"^제\s*\d+\s*관\b"), 3, BlockType.HEADING),
-    (re.compile(r"^제\s*\d+조(?:의\d+)?(?:\s*[\(（].*?[\)）])?\s"), 4, BlockType.HEADING),
-    (re.compile(r"^제\s*\d+조(?:의\d+)?(?:\s*[\(（].*?[\)）])?\s*$"), 4, BlockType.HEADING),
-]
-
-# Clause pattern (circled numbers)
-_CLAUSE_PATTERN = re.compile(r"^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]\s*")
-
-# Subclause patterns
-_SUBCLAUSE_PATTERNS = [
-    re.compile(r"^\d+\.\s+"),
-    re.compile(r"^[가나다라마바사아자차카타파하]\.\s+"),
-]
-
-# Item patterns (mok)
-_ITEM_PATTERNS = [
-    re.compile(r"^[가나다라마바사아자차카타파하]\)\s*"),
-    re.compile(r"^[ⅰ-ⅹ]\)\s*"),
-]
-
-# Numbering hierarchy for heading-level adjustment when font is heading-like.
-# Higher-depth patterns get deeper heading levels to preserve parent→child structure.
-_NUMBERING_DEPTH: list[tuple[re.Pattern[str], int]] = [
-    (re.compile(r"^[가나다라마바사아자차카타파하]\.\s+"), 2),   # 가. 나. → parent + 2
-    (re.compile(r"^\(\d+\)\s*"), 2),                           # (1) (2) → parent + 2
-]
-
-# Any recognized numbering prefix — used to gate font-based heading promotion.
-_ANY_NUMBERING_PREFIX = re.compile(
-    r"^("
-    r"\d+\.\s"
-    r"|[가나다라마바사아자차카타파하]\.\s"
-    r"|\(\d+\)\s"
-    r")"
-)
-
-_MAX_HEADING_LENGTH = 80
+if TYPE_CHECKING:
+    from docforge.domain.ports import DomainProfile
 
 
 def classify_block(
@@ -61,51 +26,41 @@ def classify_block(
     is_bold: bool = False,
     avg_font_size: float = 0.0,
     config: ParserConfig | None = None,
+    domain_profile: "DomainProfile | None" = None,
 ) -> tuple[BlockType, int]:
     """Classify a text block into its structural type and heading level.
 
+    Args:
+        text: Raw block text.
+        font_size: Block font size, used for font-based heading detection.
+        is_bold: Whether the block is rendered bold.
+        avg_font_size: Document-average font size.
+        config: Parser configuration (provides heading ratio thresholds).
+            Defaults to ``ParserConfig()``.
+        domain_profile: Optional profile override. When ``None`` the
+            ``KoreanLegalProfile`` is used so existing call sites keep
+            their behaviour.
+
     Returns:
-        Tuple of (BlockType, heading_level). heading_level is 0 for non-headings.
+        Tuple of ``(BlockType, heading_level)``. ``heading_level`` is 0
+        for non-heading blocks.
     """
     if config is None:
         config = ParserConfig()
 
-    stripped = text.strip()
-    if not stripped:
-        return BlockType.TEXT, 0
+    if domain_profile is None:
+        # Imported lazily to avoid a circular import at module load time
+        # (domain_profiles → domain.enums; safe but kept lazy for symmetry
+        # with the optional override path).
+        from docforge.processing.domain_profiles import KoreanLegalProfile
 
-    # Pattern-based heading detection (highest priority)
-    for pattern, level, block_type in _HEADING_PATTERNS:
-        if pattern.match(stripped):
-            return block_type, level
+        domain_profile = KoreanLegalProfile()
 
-    # Clauses (①②③) and items (가)/나)) are leaf-level structures — never headings.
-    if _CLAUSE_PATTERN.match(stripped):
-        return BlockType.CLAUSE, 0
-    for pattern in _ITEM_PATTERNS:
-        if pattern.match(stripped):
-            return BlockType.ITEM, 0
-
-    # Font-based heading detection (when no structural pattern matches)
-    if avg_font_size > 0:
-        base_level = 0
-        if font_size > avg_font_size * config.heading_bold_ratio and is_bold:
-            base_level = 2
-        elif font_size > avg_font_size * config.heading_size_ratio:
-            base_level = 3
-
-        if base_level > 0:
-            for pattern, depth_offset in _NUMBERING_DEPTH:
-                if pattern.match(stripped):
-                    return BlockType.HEADING, min(base_level + depth_offset, 6)
-            if _ANY_NUMBERING_PREFIX.match(stripped):
-                return BlockType.HEADING, base_level
-            if is_bold and len(stripped) <= _MAX_HEADING_LENGTH:
-                return BlockType.HEADING, base_level
-
-    # Subclause (numbered or Korean letter with dot)
-    for pattern in _SUBCLAUSE_PATTERNS:
-        if pattern.match(stripped):
-            return BlockType.SUBCLAUSE, 0
-
-    return BlockType.TEXT, 0
+    return domain_profile.classify(
+        text=text,
+        font_size=font_size,
+        is_bold=is_bold,
+        avg_font_size=avg_font_size,
+        heading_bold_ratio=config.heading_bold_ratio,
+        heading_size_ratio=config.heading_size_ratio,
+    )

@@ -6,6 +6,47 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
+class ScorerWeights:
+    """Immutable weights for table quality scoring components.
+
+    The three weights must sum to 1.0 (within float tolerance).
+    """
+
+    empty_ratio: float = 0.40
+    consistency: float = 0.35
+    text_length: float = 0.25
+
+    def __post_init__(self) -> None:
+        total = self.empty_ratio + self.consistency + self.text_length
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(
+                f"ScorerWeights must sum to 1.0, got {total}"
+            )
+        if min(self.empty_ratio, self.consistency, self.text_length) < 0.0:
+            raise ValueError("ScorerWeights components must be non-negative")
+
+
+# Domain-specific scoring presets. LEGAL preserves the historical 0.4/0.35/0.25
+# weights for backward compatibility with the Korean legal pipeline.
+LEGAL_PRESET = ScorerWeights(0.40, 0.35, 0.25)
+FINANCIAL_PRESET = ScorerWeights(0.50, 0.40, 0.10)
+ACADEMIC_PRESET = ScorerWeights(0.30, 0.30, 0.40)
+
+
+@dataclass(frozen=True)
+class TableConfig:
+    """Immutable configuration bundle for table extraction quality control.
+
+    NOTE: ``quality_threshold`` lives on ``ParserConfig.table_quality_threshold``
+    (flat field) to keep a single source of truth — ``page_processor`` reads
+    the flat field. ``TableConfig`` owns settings without flat counterparts.
+    """
+
+    scorer_weights: ScorerWeights = field(default_factory=lambda: LEGAL_PRESET)
+    vlm_router_enabled: bool = True
+
+
+@dataclass(frozen=True)
 class ParserConfig:
     """Immutable configuration for the parsing pipeline."""
 
@@ -106,3 +147,11 @@ class ParserConfig:
     table_quality_threshold: float = 0.6
     region_vlm_enabled: bool = True
     region_vlm_paddle_fallback: bool = True
+
+    # Bundled table configuration (preferred over flat fields above for new code).
+    # The flat fields are kept for backward compatibility.
+    table_config: TableConfig = field(default_factory=TableConfig)
+
+    # Domain profile selector for text structure recognition.
+    # "korean_legal" (default) | "english_academic"
+    domain_profile: str = "korean_legal"

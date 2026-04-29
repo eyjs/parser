@@ -4,18 +4,25 @@ Computes a 0.0~1.0 quality score based on:
 - Empty cell ratio
 - Row/column consistency
 - Cell text length distribution
+
+Weights are configurable via ``ScorerWeights``. The default preset is
+``LEGAL_PRESET`` (0.40 / 0.35 / 0.25) which preserves the historical
+behaviour for Korean legal documents.
 """
 
 from __future__ import annotations
 
 from docforge.domain.models import Table
+from docforge.infrastructure.config import LEGAL_PRESET, ScorerWeights
 
 
-def score_table(table: Table) -> float:
+def score_table(table: Table, weights: ScorerWeights | None = None) -> float:
     """Compute quality score for a Table. Returns 0.0~1.0 (higher = better).
 
     Args:
         table: Domain Table object to evaluate.
+        weights: Optional component weights. Defaults to ``LEGAL_PRESET``
+            so existing single-argument call sites keep their behaviour.
 
     Returns:
         Quality score between 0.0 and 1.0.
@@ -23,15 +30,17 @@ def score_table(table: Table) -> float:
     if table.rows == 0 or table.cols == 0 or not table.cells:
         return 0.0
 
+    if weights is None:
+        weights = LEGAL_PRESET
+
     empty_ratio_score = _score_empty_cells(table)
     consistency_score = _score_row_col_consistency(table)
     text_length_score = _score_text_lengths(table)
 
-    # 가중 평균: 빈 셀 40%, 행열 일관성 35%, 텍스트 길이 25%
     score = (
-        empty_ratio_score * 0.40
-        + consistency_score * 0.35
-        + text_length_score * 0.25
+        empty_ratio_score * weights.empty_ratio
+        + consistency_score * weights.consistency
+        + text_length_score * weights.text_length
     )
     return max(0.0, min(1.0, score))
 
