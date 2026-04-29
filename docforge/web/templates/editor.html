@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}마크다운 편집 — DocForge{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <div class="flex items-center gap-4">
+    <a href="{{ url_for('docforge.dashboard') }}" class="btn btn--secondary btn--sm">&larr; 대시보드</a>
+    <h1 class="page-title" style="margin-bottom: 0;" id="editorFilename">마크다운 편집</h1>
+  </div>
+  <div class="flex gap-2">
+    <button id="btnSave" class="btn btn--primary" aria-label="마크다운 저장">저장</button>
+    <a id="btnExport" href="#" class="btn btn--secondary" aria-label="마크다운 다운로드">다운로드</a>
+  </div>
+</div>
+
+<!-- Alert area -->
+<div id="alertArea" aria-live="assertive" class="mb-4"></div>
+
+<!-- Loading state -->
+<div id="loadingState" aria-live="polite">
+  <div class="card">
+    <div class="card__body" style="text-align: center; padding: 3rem;">
+      <span class="spinner" aria-hidden="true"></span>
+      <p class="text-muted mt-4">편집기를 불러오는 중...</p>
+    </div>
+  </div>
+</div>
+
+<!-- Editor (hidden until loaded) -->
+<div id="editorContainer" class="editor-layout hidden">
+  <!-- Edit panel -->
+  <div class="editor-panel">
+    <div class="editor-panel__header">
+      <span>원본 마크다운</span>
+      <span class="text-xs text-muted" id="charCount"></span>
+    </div>
+    <div class="editor-panel__body">
+      <textarea
+        id="markdownInput"
+        class="markdown-textarea"
+        aria-label="마크다운 편집 영역"
+        spellcheck="false"
+      ></textarea>
+    </div>
+  </div>
+
+  <!-- Preview panel -->
+  <div class="editor-panel">
+    <div class="editor-panel__header">
+      <span>미리보기</span>
+    </div>
+    <div class="editor-panel__body">
+      <div
+        id="markdownPreview"
+        class="markdown-preview"
+        aria-label="마크다운 미리보기"
+        aria-live="polite"
+      ></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/lib/marked.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/editor.js') }}"></script>
+<script>
+  window.__TASK_ID__ = {{ task_id | tojson }};
+</script>
+{% endblock %}

@@ -1,0 +1,17 @@
+{
+  "pipeline_id": "docforge-commercialization-phase1-2026",
+  "started_at": "2026-04-29T10:00:00+09:00",
+  "status": "completed",
+  "current_phase": "done",
+  "requirement": ".pipeline/requirement.md",
+  "phases": {
+    "requirement": { "status": "done" },
+    "planning": { "status": "done" },
+    "task_split": { "status": "done" },
+    "design": { "status": "skipped" },
+    "implementation": { "status": "done", "tasks_completed": 9 },
+    "review": { "status": "done", "verdict": "PASS" },
+    "integration": { "status": "done", "tests_passed": 200 },
+    "documentation": { "status": "done" }
+  }
+}

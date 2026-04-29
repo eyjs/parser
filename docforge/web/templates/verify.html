@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}원본 비교 편집기 — DocForge{% endblock %}
+
+{% block head %}
+<script>document.addEventListener('DOMContentLoaded', function() { document.body.classList.add('page-compare'); });</script>
+{% endblock %}
+
+{% block content %}
+<div class="compare-toolbar">
+  <div class="flex items-center gap-4">
+    <a href="{{ url_for('docforge.dashboard') }}" class="btn btn--secondary btn--sm" aria-label="대시보드로 이동">&larr; 대시보드</a>
+    <h1 class="page-title" style="margin-bottom: 0; font-size: var(--font-size-base);" id="verifyTitle">원본 비교 편집기</h1>
+  </div>
+  <div class="flex items-center gap-2">
+    <span class="text-sm text-muted" id="verifyProgress"></span>
+    <button id="btnToggleSync" class="btn btn--primary btn--sm" aria-label="스크롤 동기화 토글">동기화 ON</button>
+    <button id="btnTogglePreview" class="btn btn--secondary btn--sm" aria-label="프리뷰 토글">프리뷰</button>
+    <button id="btnSave" class="btn btn--primary btn--sm" aria-label="마크다운 저장">저장</button>
+    <a id="btnExport" href="#" class="btn btn--secondary btn--sm" aria-label="마크다운 다운로드">다운로드</a>
+  </div>
+</div>
+
+<!-- Alert area -->
+<div id="alertArea" aria-live="assertive"></div>
+
+<!-- Loading state -->
+<div id="loadingState" aria-live="polite">
+  <div class="card">
+    <div class="card__body" style="text-align: center; padding: 3rem;">
+      <span class="spinner" aria-hidden="true"></span>
+      <p class="text-muted mt-4" id="loadingMessage">결과를 불러오는 중...</p>
+    </div>
+  </div>
+</div>
+
+<!-- Main compare editor (hidden until loaded) -->
+<div id="compareEditor" class="compare-editor hidden">
+  <!-- Left: MD editor (메인) -->
+  <div class="compare-panel compare-panel--md">
+    <div class="compare-panel__header">
+      <span id="mdPanelTitle">변환 결과</span>
+      <span class="text-xs text-muted" id="charCount"></span>
+    </div>
+    <div class="compare-panel__body" id="mdPanelBody">
+      <textarea
+        id="markdownInput"
+        class="markdown-textarea"
+        aria-label="마크다운 편집 영역"
+        spellcheck="false"
+      ></textarea>
+    </div>
+    <!-- Preview panel (toggled) -->
+    <div class="compare-panel__body hidden" id="previewPanel">
+      <div class="markdown-preview" id="markdownPreview" aria-label="마크다운 프리뷰"></div>
+    </div>
+  </div>
+
+  <!-- Right: PDF viewer (참고용) -->
+  <div class="compare-panel compare-panel--pdf">
+    <div class="compare-panel__header">
+      <span>원본 PDF</span>
+      <div class="page-nav" id="pageNav">
+        <button id="btnPrevPage" class="btn btn--secondary btn--sm" aria-label="이전 페이지" disabled>&larr;</button>
+        <input type="number" id="pageNumInput" class="page-num-input" min="1" value="1" aria-label="페이지 번호" />
+        <span class="text-sm text-muted">/ <span id="totalPages">-</span></span>
+        <button id="btnNextPage" class="btn btn--secondary btn--sm" aria-label="다음 페이지" disabled>&rarr;</button>
+      </div>
+    </div>
+    <div class="compare-panel__body compare-panel__scroll" id="pdfViewerContainer">
+      <!-- All PDF pages rendered here as individual canvases -->
+    </div>
+  </div>
+</div>
+
+<!-- Live mode overlay badge -->
+<div id="liveBadge" class="live-badge hidden" aria-live="polite">
+  <span class="live-badge__dot"></span>
+  <span id="liveBadgeText">실시간 수신 중...</span>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/lib/pdf.min.js') }}"></script>
+<script>
+  window.__TASK_ID__ = {{ task_id | tojson }};
+  if (window.pdfjsLib) {
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = '{{ url_for("static", filename="js/lib/pdf.worker.min.js") }}';
+  }
+</script>
+<script src="{{ url_for('static', filename='js/verify.js') }}"></script>
+{% endblock %}

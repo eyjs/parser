@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment
+.env
+.env.local
+*.pem
+credentials.json
+
+# Test / Coverage
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Build artifacts
+*.spec
+
+# Pipeline intermediate outputs (keep structure, ignore logs/temp)
+.pipeline/logs/
+.pipeline/test_output/
+
+# Model weights / large files
+*.pt
+*.pth
+*.onnx
+*.mlmodel
+models/
+
+# Data
+*.pdf
+!tests/fixtures/**/*.pdf
+
+# Sample data / uploads / screenshots
+sample/
+uploads/
+*.png
+*.jpg
+*.jpeg
+
+# One-off scripts
+test_ocr_check.py

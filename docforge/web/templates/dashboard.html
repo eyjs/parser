@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+
+{% block title %}대시보드 — DocForge{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-4" style="margin-bottom: var(--space-2);">
+  <h1 class="page-title" style="margin-bottom: 0;">PDF → 마크다운 변환</h1>
+  <button id="btnArchitecture" class="btn btn--secondary btn--sm" aria-label="시스템 구조도 보기">구조도</button>
+</div>
+<p class="page-subtitle">PDF 파일을 업로드하면 자동으로 마크다운으로 변환합니다.</p>
+
+<!-- Architecture modal -->
+<div id="archModal" class="modal-overlay hidden" aria-modal="true" role="dialog" aria-label="시스템 구조도">
+  <div class="modal-content modal-content--wide">
+    <div class="modal-header">
+      <h2 class="modal-title">DocForge 시스템 구조도</h2>
+      <button id="btnCloseArch" class="modal-close" aria-label="닫기">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="arch-diagram">
+        <!-- Input layer -->
+        <div class="arch-layer">
+          <div class="arch-label">입력</div>
+          <div class="arch-nodes">
+            <div class="arch-node arch-node--input">
+              <div class="arch-node__icon">📄</div>
+              <div class="arch-node__title">PDF 업로드</div>
+              <div class="arch-node__desc">드래그앤드롭 / 멀티파일</div>
+            </div>
+          </div>
+        </div>
+        <div class="arch-arrow">▼</div>
+
+        <!-- Queue layer -->
+        <div class="arch-layer">
+          <div class="arch-label">큐</div>
+          <div class="arch-nodes">
+            <div class="arch-node arch-node--queue">
+              <div class="arch-node__icon">⚙️</div>
+              <div class="arch-node__title">Worker Queue</div>
+              <div class="arch-node__desc">ThreadPoolExecutor<br>병렬 처리 (max 4)</div>
+            </div>
+            <div class="arch-node arch-node--queue">
+              <div class="arch-node__icon">📡</div>
+              <div class="arch-node__title">SSE Stream</div>
+              <div class="arch-node__desc">실시간 진행률<br>페이지별 결과 전송</div>
+            </div>
+          </div>
+        </div>
+        <div class="arch-arrow">▼</div>
+
+        <!-- Processing pipeline -->
+        <div class="arch-layer">
+          <div class="arch-label">파싱 파이프라인</div>
+          <div class="arch-pipeline">
+            <div class="arch-pipe-step">
+              <strong>1. 텍스트 추출</strong>
+              <span>PyMuPDF</span>
+            </div>
+            <div class="arch-pipe-arrow">→</div>
+            <div class="arch-pipe-step">
+              <strong>2. 테이블 추출</strong>
+              <span>pdfplumber</span>
+            </div>
+            <div class="arch-pipe-arrow">→</div>
+            <div class="arch-pipe-step">
+              <strong>3. 노이즈 제거</strong>
+              <span>헤더/푸터/워터마크</span>
+            </div>
+            <div class="arch-pipe-arrow">→</div>
+            <div class="arch-pipe-step">
+              <strong>4. 줄 병합</strong>
+              <span>한글 줄바꿈 처리</span>
+            </div>
+            <div class="arch-pipe-arrow">→</div>
+            <div class="arch-pipe-step">
+              <strong>5. 구조 분류</strong>
+              <span>제/조/항/호/목</span>
+            </div>
+            <div class="arch-pipe-arrow">→</div>
+            <div class="arch-pipe-step">
+              <strong>6. MD 조립</strong>
+              <span>후처리 + 정리</span>
+            </div>
+          </div>
+        </div>
+        <div class="arch-arrow">▼</div>
+
+        <!-- Output layer -->
+        <div class="arch-layer">
+          <div class="arch-label">출력</div>
+          <div class="arch-nodes">
+            <div class="arch-node arch-node--output">
+              <div class="arch-node__icon">📝</div>
+              <div class="arch-node__title">Markdown</div>
+              <div class="arch-node__desc">YAML 메타데이터<br>구조화된 텍스트</div>
+            </div>
+            <div class="arch-node arch-node--output">
+              <div class="arch-node__icon">💾</div>
+              <div class="arch-node__title">영속화</div>
+              <div class="arch-node__desc">result.json<br>버전 관리</div>
+            </div>
+          </div>
+        </div>
+        <div class="arch-arrow">▼</div>
+
+        <!-- Verify layer -->
+        <div class="arch-layer">
+          <div class="arch-label">검증</div>
+          <div class="arch-nodes">
+            <div class="arch-node arch-node--verify">
+              <div class="arch-node__icon">🔍</div>
+              <div class="arch-node__title">비교 편집기</div>
+              <div class="arch-node__desc">PDF ↔ MD 사이드바이사이드<br>스크롤 동기화 · 실시간 편집</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Module detail -->
+      <div class="arch-detail">
+        <h3>모듈 구조</h3>
+        <div class="arch-modules">
+          <div class="arch-module">
+            <div class="arch-module__header">adapters/</div>
+            <div class="arch-module__body">pymupdf_reader · pdfplumber_tables · ocr_reader</div>
+          </div>
+          <div class="arch-module">
+            <div class="arch-module__header">processing/</div>
+            <div class="arch-module__body">noise_detector · line_merger · text_structurer · table_merger · markdown_assembler</div>
+          </div>
+          <div class="arch-module">
+            <div class="arch-module__header">usecases/</div>
+            <div class="arch-module__body">parse_pdf (오케스트레이터)</div>
+          </div>
+          <div class="arch-module">
+            <div class="arch-module__header">web/</div>
+            <div class="arch-module__body">routes · worker · sse · storage · app</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Upload area -->
+<section class="card mb-6" aria-labelledby="upload-heading">
+  <div class="card__body">
+    <h2 id="upload-heading" class="section-title">파일 업로드</h2>
+
+    <div
+      id="dropZone"
+      class="drop-zone"
+      role="button"
+      aria-label="PDF 파일을 클릭하거나 드래그하여 업로드"
+      tabindex="0"
+    >
+      <span class="drop-zone__icon" aria-hidden="true">📄</span>
+      <p class="drop-zone__label">PDF 파일을 여기에 드래그하거나 클릭하세요</p>
+      <p class="drop-zone__hint">최대 100MB · PDF 파일만 허용 · 여러 파일 선택 가능</p>
+      <input
+        type="file"
+        id="fileInput"
+        accept=".pdf"
+        multiple
+        class="sr-only"
+        aria-label="PDF 파일 선택"
+      />
+    </div>
+
+    <!-- Queue status banner -->
+    <div id="queueBanner" class="queue-banner hidden" aria-live="polite">
+      <span id="queueBannerText"></span>
+    </div>
+
+    <!-- File upload cards -->
+    <div id="uploadCards" class="upload-cards" aria-live="polite"></div>
+
+    <!-- Progress (single file compat) -->
+    <div id="progressWrap" class="progress-wrap hidden" aria-live="polite" aria-atomic="true">
+      <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressBar">
+        <div class="progress-bar__fill" id="progressFill" style="width: 0%"></div>
+      </div>
+      <p class="progress-status" id="progressStatus">준비 중...</p>
+    </div>
+
+    <!-- Alerts -->
+    <div id="alertArea" aria-live="assertive"></div>
+  </div>
+</section>
+
+<!-- History -->
+<section class="card" aria-labelledby="history-heading">
+  <div class="card__header" id="history-heading">변환 이력</div>
+  <div class="card__body" style="padding: 0; overflow-x: auto;">
+    <table class="history-table" aria-label="변환 이력 목록">
+      <thead>
+        <tr>
+          <th scope="col">파일명</th>
+          <th scope="col">상태</th>
+          <th scope="col">생성 일시</th>
+          <th scope="col">완료 일시</th>
+          <th scope="col">작업</th>
+        </tr>
+      </thead>
+      <tbody id="historyBody">
+        <tr>
+          <td colspan="5" class="text-muted text-sm" style="text-align: center; padding: 2rem;">
+            변환 이력이 없습니다.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}
