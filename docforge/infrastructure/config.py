@@ -90,3 +90,14 @@ class ParserConfig:
         "약관", "보험금", "보험료",
         "해지환급금", "만기", "갱신",
     )
+
+    # Parallel processing
+    max_workers: int = 1
+    max_ocr_workers: int = 1
+
+    # LLM Fallback
+    llm_fallback_enabled: bool = False
+    llm_confidence_threshold: float = 0.7
+    llm_confidence_margin: float = 0.05
+    llm_char_loss_threshold: float = 0.8
+    llm_domain_hint: str = "보험약관"

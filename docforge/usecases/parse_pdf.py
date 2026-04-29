@@ -3,13 +3,14 @@
 Pipeline:
 1. Profile document -> determine complexity
 2. Learn noise patterns across all pages
-3. For each page:
+3. For each page (parallel when max_workers > 1):
    a. Classify page type
    b. Extract text blocks (digital) or OCR (scanned)
    c. Extract tables
    d. Filter noise
    e. Classify text structure
    f. Merge lines into paragraphs
+   g. LLM fallback for low-confidence pages (opt-in)
 4. Merge cross-page tables
 5. Assemble markdown
 6. Calculate quality metrics
@@ -18,14 +19,19 @@ Pipeline:
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from docforge.adapters.pdfplumber_tables import PdfplumberTableExtractor
 from docforge.adapters.pymupdf_reader import PyMuPDFReader
 from docforge.domain.enums import BlockType, DocumentComplexity, PageType
 from docforge.domain.models import (
+    LLMFallbackRecord,
     Metadata,
     NoiseStats,
     PageContent,
@@ -47,58 +53,60 @@ from docforge.processing import (
 )
 from docforge.processing import column_detector
 from docforge.processing import confidence_scorer
+from docforge.processing.llm_fallback_router import run_llm_fallback, should_invoke_llm
+from docforge.processing.noise_detector import LearnedPatterns
 from docforge.usecases.profile_document import profile_document
 from docforge.usecases.ocr_factory import create_ocr_engine
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from docforge.domain.ports import VisionLLMEngine
 
 logger = logging.getLogger(__name__)
 
 KST = timezone(timedelta(hours=9))
 
 
+@dataclass(frozen=True)
+class _PageResult:
+    """Internal result from processing a single page."""
+    page_content: PageContent | None
+    tables_info: tuple[list[Table], float, float] | None
+    noise: NoiseStats
+    is_toc: bool
+    ocr_used: bool
+    llm_record: LLMFallbackRecord | None = None
+
+
 def parse_pdf(
     pdf_path: Path,
     config: ParserConfig | None = None,
     force_ocr: bool = False,
-    on_progress: "Callable[[str], None] | None" = None,  # noqa: F821
-    on_page_done: "Callable[[int, str], None] | None" = None,  # noqa: F821
+    on_progress: Callable[[str], None] | None = None,
+    on_page_done: Callable[[int, str], None] | None = None,
 ) -> ParseResult:
-    """Parse a PDF file into structured markdown.
-
-    Args:
-        pdf_path: Path to the input PDF.
-        config: Parser configuration (uses defaults if None).
-        force_ocr: Force OCR mode even for digital PDFs.
-        on_progress: Optional callback for progress messages.
-
-    Returns:
-        ParseResult with pages, markdown, metadata, and statistics.
-    """
     if config is None:
         config = ParserConfig()
 
+    progress_lock = threading.Lock()
+
     def _log(msg: str) -> None:
-        print(msg)
-        if on_progress:
-            on_progress(msg)
+        with progress_lock:
+            print(msg)
+            if on_progress:
+                on_progress(msg)
 
     start_time = time.time()
     pdf_path = Path(pdf_path)
 
-    # Initialize adapters
     reader = PyMuPDFReader()
-    table_extractor = PdfplumberTableExtractor(config)
     ocr_engine = create_ocr_engine(config.ocr_backend)
 
-    # Initialize preprocessing pipeline (for scanned pages)
-    from docforge.adapters.image_converter import pil_to_raw_image
-
+    # Check preprocessing availability once (avoid per-worker ImportError try-catch)
     preprocessing_available = False
-    scanned_preprocessor = None
-    quality_policy = ImageQualityPolicy()
     try:
-        from docforge.adapters.opencv_preprocessor import OpenCVPreprocessor
-        from docforge.processing.preprocessing_router import process_scanned_page
-        scanned_preprocessor = OpenCVPreprocessor()
+        from docforge.adapters.opencv_preprocessor import OpenCVPreprocessor  # noqa: F401
+        from docforge.processing.preprocessing_router import process_scanned_page  # noqa: F401
         preprocessing_available = True
     except ImportError:
         logger.info("OpenCV not available, preprocessing disabled")
@@ -109,10 +117,8 @@ def parse_pdf(
     _log(f"       Complexity: {profile.complexity.value}, "
          f"Recommended: {profile.recommended_parser}")
 
-    # OCR is attempted per-page when page is SCANNED/MIXED
     ocr_available = ocr_engine.is_available()
     use_ocr = force_ocr or ocr_available
-    ocr_actually_used = False
 
     # Step 2: Learn noise patterns
     _log("[2/6] Learning noise patterns...")
@@ -138,7 +144,6 @@ def parse_pdf(
     font_sizes = reader.get_font_sizes(doc)
     avg_font_size = sum(font_sizes) / len(font_sizes) if font_sizes else 10.0
 
-    # Calculate average line gap from first few pages
     all_gaps: list[float] = []
     sample_pages = min(10, total_pages)
     for page_idx in range(sample_pages):
@@ -146,184 +151,88 @@ def parse_pdf(
         all_gaps.extend(gaps)
     avg_line_gap = sum(all_gaps) / len(all_gaps) if all_gaps else 5.0
 
-    # Step 4: Process pages
+    reader.close(doc)
+
+    # LLM fallback engine (opt-in, graceful skip if unavailable)
+    llm_engine: VisionLLMEngine | None = None
+    if config.llm_fallback_enabled:
+        try:
+            from docforge.adapters.vision_llm_engine import Qwen2VLMLXEngine
+            _candidate = Qwen2VLMLXEngine()
+            if _candidate.is_available():
+                llm_engine = _candidate
+            else:
+                logger.info("LLM fallback disabled — mlx_vlm not installed")
+        except Exception:
+            logger.warning("LLM engine init failed, LLM fallback disabled", exc_info=True)
+
+    # Step 4: Process pages (parallel when max_workers > 1)
     _log(f"[4/6] Processing {total_pages} pages...")
-    plumber_doc = table_extractor.open(pdf_path)
+
+    ocr_semaphore = threading.Semaphore(config.max_ocr_workers)
+
+    def _submit_page(page_idx: int) -> _PageResult:
+        return _process_single_page(
+            page_idx=page_idx,
+            pdf_path=pdf_path,
+            config=config,
+            patterns=patterns,
+            avg_font_size=avg_font_size,
+            avg_line_gap=avg_line_gap,
+            use_ocr=use_ocr,
+            preprocessing_available=preprocessing_available,
+            ocr_semaphore=ocr_semaphore,
+            llm_engine=llm_engine,
+            log_fn=_log,
+            total_pages=total_pages,
+        )
+
+    raw_results: list[tuple[int, _PageResult]] = []
+
+    with ThreadPoolExecutor(max_workers=config.max_workers) as executor:
+        futures = {
+            executor.submit(_submit_page, page_idx): page_idx
+            for page_idx in range(total_pages)
+        }
+        for future in as_completed(futures):
+            page_idx = futures[future]
+            try:
+                result = future.result()
+            except Exception:
+                logger.warning("Page %d processing failed, skipping", page_idx + 1, exc_info=True)
+                result = _PageResult(
+                    page_content=None, tables_info=None,
+                    noise=NoiseStats(), is_toc=False, ocr_used=False,
+                )
+            raw_results.append((page_idx, result))
+
+    raw_results.sort(key=lambda x: x[0])
 
     parsed_pages: list[PageContent] = []
     all_page_tables: list[tuple[list[Table], float, float]] = []
     accumulated_noise = NoiseStats()
     toc_page_count = 0
+    ocr_actually_used = False
+    llm_fallback_records: list[LLMFallbackRecord] = []
 
-    for page_idx in range(total_pages):
-        _log(f"[page] {page_idx + 1}/{total_pages}")
-        width, height = reader.get_page_dimensions(doc, page_idx)
-        raw_text = reader.extract_raw_text(doc, page_idx)
-        char_count = len(raw_text.strip())
-
-        # Get image info for classification
-        images = reader.get_page_images(doc, page_idx)
-        has_images = len(images) > 0
-        page_area = width * height
-        image_area = sum(img["area"] for img in images)
-        image_ratio = image_area / max(page_area, 1.0)
-
-        # Classify page
-        page_type = page_classifier.classify_page(
-            char_count, has_images, image_ratio, raw_text, config
-        )
-
-        if page_type == PageType.NOISE:
+    for _idx, pr in raw_results:
+        if pr.is_toc:
             toc_page_count += 1
             continue
-
-        # Extract text blocks
-        blocks: list[TextBlock] = []
-
-        page_gate_result = None
-
-        if page_type in (PageType.DIGITAL, PageType.MIXED):
-            blocks = reader.extract_text_blocks(doc, page_idx)
-
-        if page_type == PageType.SCANNED and use_ocr and ocr_available:
-            image = reader.render_page_image(doc, page_idx, config.dpi)
-            raw_img = pil_to_raw_image(image)
-            if preprocessing_available and scanned_preprocessor is not None:
-                ocr_blocks, _decision, page_gate_result = process_scanned_page(
-                    raw_img, ocr_engine, scanned_preprocessor, quality_policy,
-                )
-            else:
-                ocr_blocks = ocr_engine.recognize(raw_img)
-            ocr_blocks = ocr_corrector.correct_blocks(ocr_blocks, config)
-            blocks.extend(ocr_blocks)
-            if ocr_blocks:
-                ocr_actually_used = True
-
-        if page_type == PageType.MIXED and use_ocr and ocr_available:
-            # For mixed pages, also OCR and merge
-            image = reader.render_page_image(doc, page_idx, config.dpi)
-            raw_img = pil_to_raw_image(image)
-            if preprocessing_available and scanned_preprocessor is not None:
-                ocr_blocks, _decision, page_gate_result = process_scanned_page(
-                    raw_img, ocr_engine, scanned_preprocessor, quality_policy,
-                )
-            else:
-                ocr_blocks = ocr_engine.recognize(raw_img)
-            ocr_blocks = ocr_corrector.correct_blocks(ocr_blocks, config)
-            # Only add OCR blocks that don't overlap with digital text
-            for ob in ocr_blocks:
-                if not any(_blocks_overlap(ob, db) for db in blocks):
-                    blocks.append(ob)
-                    ocr_actually_used = True
-
-        # Filter noise
-        clean_blocks, page_noise = noise_detector.filter_noise_from_blocks(
-            blocks, height, patterns, config
-        )
-
+        if pr.page_content is not None:
+            parsed_pages.append(pr.page_content)
+        if pr.tables_info is not None:
+            all_page_tables.append(pr.tables_info)
         accumulated_noise = NoiseStats(
-            headers=accumulated_noise.headers + page_noise.headers,
-            footers=accumulated_noise.footers + page_noise.footers,
-            page_numbers=accumulated_noise.page_numbers + page_noise.page_numbers,
-            watermarks=accumulated_noise.watermarks + page_noise.watermarks,
+            headers=accumulated_noise.headers + pr.noise.headers,
+            footers=accumulated_noise.footers + pr.noise.footers,
+            page_numbers=accumulated_noise.page_numbers + pr.noise.page_numbers,
+            watermarks=accumulated_noise.watermarks + pr.noise.watermarks,
         )
-
-        # Detect multi-column layout and reorder blocks
-        col_layout = column_detector.detect_columns(clean_blocks, width)
-        if col_layout.num_columns > 1:
-            clean_blocks = column_detector.reorder_blocks_by_columns(
-                clean_blocks, col_layout,
-            )
-
-        # Post-processing order depends on page type:
-        # DIGITAL: classify structure first, then merge lines
-        # SCANNED/MIXED: merge lines first (OCR output needs grouping), then classify
-        if page_type == PageType.DIGITAL:
-            classified_blocks: list[TextBlock] = []
-            for block in clean_blocks:
-                block_type, heading_level = text_structurer.classify_block(
-                    block.text, block.font.size, block.font.is_bold, avg_font_size, config
-                )
-                classified_blocks.append(TextBlock(
-                    text=block.text,
-                    bbox=block.bbox,
-                    font=block.font,
-                    block_type=block_type,
-                    heading_level=heading_level,
-                    confidence=block.confidence,
-                ))
-            merged_blocks = line_merger.merge_lines(
-                classified_blocks, avg_font_size, avg_line_gap, config
-            )
-        else:
-            # SCANNED / MIXED: merge first, then classify
-            merged_first = line_merger.merge_lines(
-                clean_blocks, avg_font_size, avg_line_gap, config
-            )
-            merged_blocks = []
-            for block in merged_first:
-                block_type, heading_level = text_structurer.classify_block(
-                    block.text, block.font.size, block.font.is_bold, avg_font_size, config
-                )
-                merged_blocks.append(TextBlock(
-                    text=block.text,
-                    bbox=block.bbox,
-                    font=block.font,
-                    block_type=block_type,
-                    heading_level=heading_level,
-                    confidence=block.confidence,
-                ))
-
-        # Extract tables (pass page dimensions for layout table filtering)
-        page_tables = table_extractor.extract_from_page(
-            plumber_doc, page_idx, page_width=width, page_height=height,
-        )
-
-        # OCR-based table extraction for scanned pages
-        if page_type == PageType.SCANNED and not page_tables:
-            from docforge.adapters.paddle_table import PaddleTableExtractor
-            paddle_tables = PaddleTableExtractor()
-            if paddle_tables.is_available():
-                image = reader.render_page_image(doc, page_idx, config.dpi)
-                page_tables = paddle_tables.extract_from_image(image)
-
-        # Filter leader dots from tables (TOC-like entries)
-        filtered_tables: list[Table] = []
-        for table in page_tables:
-            filtered_cells, new_rows = noise_detector.filter_leader_dots_from_table(
-                list(table.cells), table.rows, table.cols,
-            )
-            if new_rows >= config.min_table_rows:
-                from docforge.domain.models import TableCell as TC
-                filtered_tables.append(Table(
-                    cells=tuple(c for c in filtered_cells if isinstance(c, TC)),
-                    rows=new_rows,
-                    cols=table.cols,
-                    bbox=table.bbox,
-                    confidence=table.confidence,
-                    needs_review=table.needs_review,
-                ))
-        page_tables = filtered_tables
-
-        all_page_tables.append((page_tables, height, width))
-
-        # Calculate page confidence score
-        page_confidence = confidence_scorer.score_page(
-            merged_blocks, page_type, width, height, page_gate_result,
-        )
-
-        parsed_pages.append(PageContent(
-            page_num=page_idx + 1,
-            page_type=page_type,
-            blocks=tuple(merged_blocks),
-            tables=tuple(page_tables),
-            raw_text=raw_text,
-            width=width,
-            height=height,
-            confidence=page_confidence,
-        ))
-
-    table_extractor.close(plumber_doc)
+        if pr.ocr_used:
+            ocr_actually_used = True
+        if pr.llm_record is not None:
+            llm_fallback_records.append(pr.llm_record)
 
     # Step 5: Merge cross-page tables
     _log("[5/6] Merging cross-page tables...")
@@ -331,11 +240,9 @@ def parse_pdf(
         merged_tables_per_page = table_merger.merge_cross_page_tables(
             all_page_tables, config
         )
-        # Update parsed pages with merged tables
         updated_pages: list[PageContent] = []
         table_page_idx = 0
         for page in parsed_pages:
-            # Find the corresponding table list
             while table_page_idx < len(merged_tables_per_page):
                 tables = merged_tables_per_page[table_page_idx]
                 table_page_idx += 1
@@ -365,9 +272,14 @@ def parse_pdf(
                 try:
                     on_page_done(page.page_num, md)
                 except Exception:
-                    pass  # 콜백 실패가 파싱을 중단하지 않음
+                    pass
 
-    # Build metadata
+    for record in llm_fallback_records:
+        logger.info(
+            "LLM fallback page=%d adopted=%s reason=%s",
+            record.page_num, record.adopted, record.reason,
+        )
+
     noise_with_toc = NoiseStats(
         headers=accumulated_noise.headers,
         footers=accumulated_noise.footers,
@@ -377,7 +289,6 @@ def parse_pdf(
         watermarks=accumulated_noise.watermarks,
     )
 
-    # Determine source type
     if use_ocr and profile.complexity == DocumentComplexity.IMAGE_HEAVY:
         source_type = "scanned_pdf"
     elif profile.complexity == DocumentComplexity.MIXED:
@@ -403,15 +314,11 @@ def parse_pdf(
 
     markdown = markdown_assembler.finalize_markdown(page_markdowns, metadata)
 
-    # Calculate metrics
     elapsed_ms = (time.time() - start_time) * 1000
     stats = quality_metrics.calculate_metrics(
         parsed_pages, markdown, noise_with_toc, elapsed_ms
     )
 
-    reader.close(doc)
-
-    # Print summary
     warnings = quality_metrics.detect_anomalies(stats)
     _log(f"\nDone! {stats.parsed_pages} pages parsed, "
          f"{stats.tables_found} tables extracted, "
@@ -427,11 +334,240 @@ def parse_pdf(
         metadata=metadata,
         stats=stats,
         profile=profile,
+        llm_fallback_records=tuple(llm_fallback_records),
     )
 
 
+def _process_single_page(
+    page_idx: int,
+    pdf_path: Path,
+    config: ParserConfig,
+    patterns: LearnedPatterns,
+    avg_font_size: float,
+    avg_line_gap: float,
+    use_ocr: bool,
+    preprocessing_available: bool,
+    ocr_semaphore: threading.Semaphore,
+    llm_engine: VisionLLMEngine | None,
+    log_fn: Callable[[str], None],
+    total_pages: int,
+) -> _PageResult:
+    """Process a single page. Opens its own doc/plumber handles for thread safety."""
+    from docforge.adapters.image_converter import pil_to_raw_image
+
+    reader = PyMuPDFReader()
+    doc = reader.open(pdf_path)
+    table_extractor = PdfplumberTableExtractor(config)
+    plumber_doc = table_extractor.open(pdf_path)
+
+    # OCR engine created inside semaphore to avoid multiple heavy instances
+    ocr_engine = None
+    ocr_available = False
+
+    scanned_preprocessor = None
+    quality_policy = ImageQualityPolicy()
+    if preprocessing_available:
+        from docforge.adapters.opencv_preprocessor import OpenCVPreprocessor
+        from docforge.processing.preprocessing_router import process_scanned_page
+        scanned_preprocessor = OpenCVPreprocessor()
+
+    try:
+        log_fn(f"[page] {page_idx + 1}/{total_pages}")
+        width, height = reader.get_page_dimensions(doc, page_idx)
+        raw_text = reader.extract_raw_text(doc, page_idx)
+        char_count = len(raw_text.strip())
+
+        images = reader.get_page_images(doc, page_idx)
+        has_images = len(images) > 0
+        page_area = width * height
+        image_area = sum(img["area"] for img in images)
+        image_ratio = image_area / max(page_area, 1.0)
+
+        page_type = page_classifier.classify_page(
+            char_count, has_images, image_ratio, raw_text, config
+        )
+
+        if page_type == PageType.NOISE:
+            return _PageResult(
+                page_content=None, tables_info=None,
+                noise=NoiseStats(), is_toc=True, ocr_used=False,
+            )
+
+        blocks: list[TextBlock] = []
+        page_gate_result = None
+        page_ocr_used = False
+
+        if page_type in (PageType.DIGITAL, PageType.MIXED):
+            blocks = reader.extract_text_blocks(doc, page_idx)
+
+        if page_type == PageType.SCANNED and use_ocr:
+            with ocr_semaphore:
+                if ocr_engine is None:
+                    ocr_engine = create_ocr_engine(config.ocr_backend)
+                    ocr_available = ocr_engine.is_available()
+                if ocr_available:
+                    image = reader.render_page_image(doc, page_idx, config.dpi)
+                    raw_img = pil_to_raw_image(image)
+                    if preprocessing_available and scanned_preprocessor is not None:
+                        ocr_blocks, _decision, page_gate_result = process_scanned_page(
+                            raw_img, ocr_engine, scanned_preprocessor, quality_policy,
+                        )
+                    else:
+                        ocr_blocks = ocr_engine.recognize(raw_img)
+                    ocr_blocks = ocr_corrector.correct_blocks(ocr_blocks, config)
+                    blocks.extend(ocr_blocks)
+                    if ocr_blocks:
+                        page_ocr_used = True
+
+        if page_type == PageType.MIXED and use_ocr:
+            with ocr_semaphore:
+                if ocr_engine is None:
+                    ocr_engine = create_ocr_engine(config.ocr_backend)
+                    ocr_available = ocr_engine.is_available()
+                if ocr_available:
+                    image = reader.render_page_image(doc, page_idx, config.dpi)
+                    raw_img = pil_to_raw_image(image)
+                    if preprocessing_available and scanned_preprocessor is not None:
+                        ocr_blocks, _decision, page_gate_result = process_scanned_page(
+                            raw_img, ocr_engine, scanned_preprocessor, quality_policy,
+                        )
+                    else:
+                        ocr_blocks = ocr_engine.recognize(raw_img)
+                    ocr_blocks = ocr_corrector.correct_blocks(ocr_blocks, config)
+                    for ob in ocr_blocks:
+                        if not any(_blocks_overlap(ob, db) for db in blocks):
+                            blocks.append(ob)
+                            page_ocr_used = True
+
+        # Filter noise
+        clean_blocks, page_noise = noise_detector.filter_noise_from_blocks(
+            blocks, height, patterns, config
+        )
+
+        # Detect multi-column layout
+        col_layout = column_detector.detect_columns(clean_blocks, width)
+        if col_layout.num_columns > 1:
+            clean_blocks = column_detector.reorder_blocks_by_columns(
+                clean_blocks, col_layout,
+            )
+
+        # Post-processing order
+        if page_type == PageType.DIGITAL:
+            classified_blocks: list[TextBlock] = []
+            for block in clean_blocks:
+                block_type, heading_level = text_structurer.classify_block(
+                    block.text, block.font.size, block.font.is_bold, avg_font_size, config
+                )
+                classified_blocks.append(TextBlock(
+                    text=block.text,
+                    bbox=block.bbox,
+                    font=block.font,
+                    block_type=block_type,
+                    heading_level=heading_level,
+                    confidence=block.confidence,
+                ))
+            merged_blocks = line_merger.merge_lines(
+                classified_blocks, avg_font_size, avg_line_gap, config
+            )
+        else:
+            merged_first = line_merger.merge_lines(
+                clean_blocks, avg_font_size, avg_line_gap, config
+            )
+            merged_blocks = []
+            for block in merged_first:
+                block_type, heading_level = text_structurer.classify_block(
+                    block.text, block.font.size, block.font.is_bold, avg_font_size, config
+                )
+                merged_blocks.append(TextBlock(
+                    text=block.text,
+                    bbox=block.bbox,
+                    font=block.font,
+                    block_type=block_type,
+                    heading_level=heading_level,
+                    confidence=block.confidence,
+                ))
+
+        # Extract tables
+        page_tables = table_extractor.extract_from_page(
+            plumber_doc, page_idx, page_width=width, page_height=height,
+        )
+
+        if page_type == PageType.SCANNED and not page_tables:
+            from docforge.adapters.paddle_table import PaddleTableExtractor
+            paddle_tables = PaddleTableExtractor()
+            if paddle_tables.is_available():
+                image = reader.render_page_image(doc, page_idx, config.dpi)
+                page_tables = paddle_tables.extract_from_image(image)
+
+        # Filter leader dots
+        filtered_tables: list[Table] = []
+        for table in page_tables:
+            filtered_cells, new_rows = noise_detector.filter_leader_dots_from_table(
+                list(table.cells), table.rows, table.cols,
+            )
+            if new_rows >= config.min_table_rows:
+                from docforge.domain.models import TableCell as TC
+                filtered_tables.append(Table(
+                    cells=tuple(c for c in filtered_cells if isinstance(c, TC)),
+                    rows=new_rows,
+                    cols=table.cols,
+                    bbox=table.bbox,
+                    confidence=table.confidence,
+                    needs_review=table.needs_review,
+                ))
+        page_tables = filtered_tables
+
+        # Calculate page confidence
+        page_confidence = confidence_scorer.score_page(
+            merged_blocks, page_type, width, height, page_gate_result,
+        )
+
+        page_content = PageContent(
+            page_num=page_idx + 1,
+            page_type=page_type,
+            blocks=tuple(merged_blocks),
+            tables=tuple(page_tables),
+            raw_text=raw_text,
+            width=width,
+            height=height,
+            confidence=page_confidence,
+        )
+
+        # LLM Fallback for low-confidence pages
+        llm_record = None
+        if llm_engine is not None and should_invoke_llm(page_content, config):
+            page_image_raw = pil_to_raw_image(
+                reader.render_page_image(doc, page_idx, config.dpi)
+            )
+            final_blocks, llm_record = run_llm_fallback(
+                page_content, page_image_raw, llm_engine, config,
+            )
+            if llm_record.adopted:
+                page_content = PageContent(
+                    page_num=page_idx + 1,
+                    page_type=page_type,
+                    blocks=tuple(final_blocks),
+                    tables=tuple(page_tables),
+                    raw_text=raw_text,
+                    width=width,
+                    height=height,
+                    confidence=page_confidence,
+                )
+
+        return _PageResult(
+            page_content=page_content,
+            tables_info=(page_tables, height, width),
+            noise=page_noise,
+            is_toc=False,
+            ocr_used=page_ocr_used,
+            llm_record=llm_record,
+        )
+    finally:
+        reader.close(doc)
+        table_extractor.close(plumber_doc)
+
+
 def _blocks_overlap(block_a: TextBlock, block_b: TextBlock) -> bool:
-    """Check if two text blocks significantly overlap."""
     a = block_a.bbox
     b = block_b.bbox
 

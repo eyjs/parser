@@ -1,18 +1,18 @@
 {
   "pipeline_id": "docforge-commercialization-phase1-2026",
   "started_at": "2026-04-29T10:00:00+09:00",
-  "status": "feedback_complete",
-  "current_phase": "integration",
+  "status": "done",
+  "current_phase": "complete",
   "requirement": ".pipeline/requirement.md",
-  "active_feedback": ".pipeline/feedback-002.md",
+  "active_feedback": null,
   "phases": {
     "requirement": { "status": "done" },
     "planning": { "status": "done" },
     "task_split": { "status": "done" },
     "design": { "status": "skipped" },
-    "implementation": { "status": "done", "tasks_completed": 9 },
+    "implementation": { "status": "done", "tasks_completed": 11 },
     "review": { "status": "done", "verdict": "PASS" },
-    "integration": { "status": "done", "tests_passed": 201 },
+    "integration": { "status": "done", "tests_passed": 218 },
     "documentation": { "status": "done" }
   },
   "feedback_cycles": [
@@ -20,16 +20,22 @@
       "id": "feedback-002",
       "file": ".pipeline/feedback-002.md",
       "type": "bugfix",
+      "status": "done"
+    },
+    {
+      "id": "feedback-003",
+      "file": ".pipeline/feedback-003.md",
+      "type": "new_features",
       "created_at": "2026-04-29T00:00:00+09:00",
       "status": "done",
       "items": {
-        "critical": 4,
-        "important": 11,
-        "total": 15,
-        "resolved": 15
+        "feature_1": "병렬 페이지 처리 (ThreadPoolExecutor)",
+        "feature_2": "LLM Fallback (Qwen2-VL-7B MLX)",
+        "total": 2,
+        "resolved": 2
       },
       "test_results": {
-        "passed": 201,
+        "passed": 218,
         "errors": 4,
         "error_reason": "flask not installed (test_worker_queue)"
       }

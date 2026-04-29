@@ -110,3 +110,18 @@ class FormatParser(Protocol):
     def supported_extensions(self) -> tuple[str, ...]:
         """Return tuple of supported file extensions (e.g., '.pdf', '.html')."""
         ...
+
+
+class VisionLLMEngine(Protocol):
+    """Port for Vision LLM — page-level text correction."""
+
+    def correct_page(
+        self,
+        image: RawImage,
+        ocr_blocks: list[TextBlock],
+        prompt_hint: str = "",
+    ) -> list[TextBlock]:
+        ...
+
+    def is_available(self) -> bool:
+        ...

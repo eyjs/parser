@@ -112,6 +112,16 @@ class Metadata:
 
 
 @dataclass(frozen=True)
+class LLMFallbackRecord:
+    """LLM fallback event record for audit logging."""
+    page_num: int
+    trigger_confidence: float
+    llm_confidence: float
+    adopted: bool
+    reason: str
+
+
+@dataclass(frozen=True)
 class ParseResult:
     """Complete parsing result."""
 
@@ -120,3 +130,4 @@ class ParseResult:
     metadata: Metadata
     stats: ParseStats
     profile: DocumentProfile
+    llm_fallback_records: tuple[LLMFallbackRecord, ...] = ()
