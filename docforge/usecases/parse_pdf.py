@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -35,6 +36,7 @@ from docforge.domain.models import (
     Metadata,
     NoiseStats,
     PageContent,
+    PageError,
     ParseResult,
     RegionVLMRecord,
     Table,
@@ -205,6 +207,7 @@ def parse_pdf(
         )
 
     raw_results: list[tuple[int, _PageResult]] = []
+    page_errors: list[PageError] = []
 
     with ThreadPoolExecutor(max_workers=config.max_workers) as executor:
         futures = {
@@ -215,8 +218,24 @@ def parse_pdf(
             page_idx = futures[future]
             try:
                 result = future.result()
-            except Exception:
-                logger.warning("Page %d processing failed, skipping", page_idx + 1, exc_info=True)
+            except Exception as exc:
+                # Surface the failure: data loss for this page must NOT be silent.
+                # Use ERROR level (warning was hiding "4,5,6 page missing" in logs)
+                # AND accumulate PageError for visibility in ParseResult.
+                tb_str = traceback.format_exc()
+                logger.error(
+                    "Page %d processing failed, page will be missing from output",
+                    page_idx + 1,
+                    exc_info=True,
+                )
+                page_errors.append(PageError(
+                    page_number=page_idx + 1,
+                    error_type=type(exc).__name__,
+                    message=str(exc) or repr(exc),
+                    traceback=tb_str,
+                ))
+                # Backward-compat: keep _PageResult with None content so downstream
+                # aggregation code paths remain unchanged.
                 result = _PageResult(
                     page_content=None, tables_info=None,
                     noise=NoiseStats(), is_toc=False, ocr_used=False,
@@ -361,6 +380,7 @@ def parse_pdf(
         profile=profile,
         llm_fallback_records=tuple(llm_fallback_records),
         region_vlm_records=tuple(all_region_vlm_records),
+        page_errors=tuple(page_errors),
     )
 
 
@@ -497,11 +517,13 @@ def _process_single_page(
                     confidence=block.confidence,
                 ))
             merged_blocks = line_merger.merge_lines(
-                classified_blocks, avg_font_size, avg_line_gap, config
+                classified_blocks, avg_font_size, avg_line_gap, config,
+                morpheme_analyzer=morpheme_analyzer,
             )
         else:
             merged_first = line_merger.merge_lines(
-                clean_blocks, avg_font_size, avg_line_gap, config
+                clean_blocks, avg_font_size, avg_line_gap, config,
+                morpheme_analyzer=morpheme_analyzer,
             )
             merged_blocks = []
             for block in merged_first:

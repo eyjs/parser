@@ -7,6 +7,7 @@ merges them back into logical paragraphs for better RAG chunking.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from docforge.domain.enums import BlockType
 from docforge.domain.models import TextBlock
@@ -14,12 +15,24 @@ from docforge.domain.value_objects import BBox, FontInfo
 from docforge.infrastructure.config import ParserConfig
 from docforge.processing.text_structurer import classify_block
 
+if TYPE_CHECKING:
+    from docforge.domain.ports import MorphemeAnalyzer
+
+# Kiwi tag sets used to detect linguistic continuation signals.
+# JX/JKB/JKG/JKO/JKS/JKC = Korean postpositions (조사)
+# MAJ/MAG = conjunctive/general adverbs (접속부사 등)
+# EC = connective ending (연결어미)
+_POSTPOSITION_TAGS = frozenset({"JX", "JKB", "JKG", "JKO", "JKS", "JKC"})
+_CONJUNCTION_TAGS = frozenset({"MAJ", "MAG"})
+_CONNECTIVE_ENDING_TAGS = frozenset({"EC"})
+
 
 def merge_lines(
     blocks: list[TextBlock],
     avg_font_size: float,
     avg_line_gap: float,
     config: ParserConfig,
+    morpheme_analyzer: MorphemeAnalyzer | None = None,
 ) -> list[TextBlock]:
     """Merge consecutive text blocks into logical paragraphs.
 
@@ -28,6 +41,10 @@ def merge_lines(
         avg_font_size: Document-average font size.
         avg_line_gap: Average vertical gap between consecutive lines.
         config: Parser configuration.
+        morpheme_analyzer: Optional morpheme analyzer (Protocol). When provided
+            and available, Kiwi POS tags drive merge decisions for postpositions /
+            conjunctions / connective endings. When None or unavailable, falls
+            back to the legacy hardcoded whitelists in ``config``.
 
     Returns:
         Merged text blocks.
@@ -46,7 +63,10 @@ def merge_lines(
         prev_block = blocks[i - 1]
         curr_block = blocks[i]
 
-        if _should_split(prev_block, curr_block, avg_font_size, avg_line_gap, config):
+        if _should_split(
+            prev_block, curr_block, avg_font_size, avg_line_gap, config,
+            morpheme_analyzer=morpheme_analyzer,
+        ):
             # Flush the accumulated paragraph
             merged_text = _join_texts(current_texts)
             if merged_text:
@@ -150,12 +170,55 @@ def _join_texts(texts: list[str]) -> str:
     return result
 
 
+def _analyzer_available(analyzer: MorphemeAnalyzer | None) -> bool:
+    """Return True only when a real analyzer is supplied AND ready."""
+    if analyzer is None:
+        return False
+    try:
+        return bool(analyzer.is_available())
+    except Exception:
+        return False
+
+
+def _first_token_tag(
+    text: str,
+    analyzer: MorphemeAnalyzer | None,
+) -> str | None:
+    """Return POS tag of the first morpheme in ``text``, or None on failure."""
+    if not _analyzer_available(analyzer):
+        return None
+    try:
+        tokens = analyzer.tokenize(text)  # type: ignore[union-attr]
+    except Exception:
+        return None
+    if not tokens:
+        return None
+    return tokens[0].tag
+
+
+def _last_token_tag(
+    text: str,
+    analyzer: MorphemeAnalyzer | None,
+) -> str | None:
+    """Return POS tag of the last morpheme in ``text``, or None on failure."""
+    if not _analyzer_available(analyzer):
+        return None
+    try:
+        tokens = analyzer.tokenize(text)  # type: ignore[union-attr]
+    except Exception:
+        return None
+    if not tokens:
+        return None
+    return tokens[-1].tag
+
+
 def _should_split(
     prev: TextBlock,
     curr: TextBlock,
     avg_font_size: float,
     avg_line_gap: float,
     config: ParserConfig,
+    morpheme_analyzer: MorphemeAnalyzer | None = None,
 ) -> bool:
     """Determine if a split should happen between prev and curr blocks.
 
@@ -225,15 +288,24 @@ def _should_split(
 
     # --- Merge conditions (any match -> same paragraph) ---
 
-    # Next line starts with a Korean postposition (indicates continuation)
-    for pp in config.korean_postpositions:
-        if curr_text.startswith(pp):
-            return False
+    use_morpheme = _analyzer_available(morpheme_analyzer)
 
-    # Next line starts with a conjunction
-    for conj in config.korean_conjunctions:
-        if curr_text.startswith(conj):
+    # Tokenize curr_text once and reuse for both postposition and conjunction
+    # checks (Kiwi calls are expensive — avoid double tokenization per line pair).
+    if use_morpheme:
+        first_tag = _first_token_tag(curr_text, morpheme_analyzer)
+        if first_tag in _POSTPOSITION_TAGS:
             return False
+        if first_tag in _CONJUNCTION_TAGS:
+            return False
+    else:
+        # Legacy whitelist fallback: postpositions + conjunctions.
+        for pp in config.korean_postpositions:
+            if curr_text.startswith(pp):
+                return False
+        for conj in config.korean_conjunctions:
+            if curr_text.startswith(conj):
+                return False
 
     # Previous line ends with amount/date -> likely followed by description
     if _AMOUNT_DATE_END_RE.search(prev_text):
@@ -243,10 +315,15 @@ def _should_split(
     if not prev_text.endswith((".", "。", "?", "!", ":", ";")):
         return False
 
-    # Previous line ends with continuation suffix
-    for suffix in config.korean_continuation_suffixes:
-        if prev_text.endswith(suffix):
+    # Previous line ends with a connective ending (EC) -> sentence continues.
+    if use_morpheme:
+        last_tag = _last_token_tag(prev_text, morpheme_analyzer)
+        if last_tag in _CONNECTIVE_ENDING_TAGS:
             return False
+    else:
+        for suffix in config.korean_continuation_suffixes:
+            if prev_text.endswith(suffix):
+                return False
 
     # Same font properties -> likely continuation
     if (abs(curr.font.size - prev.font.size) < 0.5

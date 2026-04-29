@@ -132,6 +132,20 @@ class RegionVLMRecord:
 
 
 @dataclass(frozen=True)
+class PageError:
+    """Per-page processing error surfaced to the API response.
+
+    Used to make page-level failures visible to callers instead of being
+    silently dropped (data loss). Carries enough context to debug the failure.
+    """
+
+    page_number: int           # 1-based page number for user display
+    error_type: str            # e.g. "ProcessingError", "OCRError", "TimeoutError"
+    message: str               # Short human-readable summary
+    traceback: str | None = None  # Full traceback string for debugging (optional)
+
+
+@dataclass(frozen=True)
 class ParseResult:
     """Complete parsing result."""
 
@@ -142,3 +156,4 @@ class ParseResult:
     profile: DocumentProfile
     llm_fallback_records: tuple[LLMFallbackRecord, ...] = ()
     region_vlm_records: tuple[RegionVLMRecord, ...] = ()
+    page_errors: tuple[PageError, ...] = ()
