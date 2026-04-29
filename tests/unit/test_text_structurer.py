@@ -97,9 +97,15 @@ class TestFontBasedDetection:
         assert block_type == BlockType.HEADING
         assert level == 2
 
-    def test_large_font_not_bold(self) -> None:
-        block_type, level = classify_block(
+    def test_large_font_not_bold_no_prefix(self) -> None:
+        block_type, _ = classify_block(
             "보험금의 지급", font_size=13.0, is_bold=False, avg_font_size=10.0
+        )
+        assert block_type == BlockType.TEXT
+
+    def test_large_font_not_bold_with_prefix(self) -> None:
+        block_type, level = classify_block(
+            "3. 보험금의 지급", font_size=13.0, is_bold=False, avg_font_size=10.0
         )
         assert block_type == BlockType.HEADING
         assert level == 3

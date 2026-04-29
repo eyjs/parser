@@ -41,8 +41,18 @@ _ITEM_PATTERNS = [
 _NUMBERING_DEPTH: list[tuple[re.Pattern[str], int]] = [
     (re.compile(r"^[가나다라마바사아자차카타파하]\.\s+"), 2),   # 가. 나. → parent + 2
     (re.compile(r"^\(\d+\)\s*"), 2),                           # (1) (2) → parent + 2
-    (re.compile(r"^[가나다라마바사아자차카타파하]\)\s*"), 3),   # 가) 나) → parent + 3
 ]
+
+# Any recognized numbering prefix — used to gate font-based heading promotion.
+_ANY_NUMBERING_PREFIX = re.compile(
+    r"^("
+    r"\d+\.\s"
+    r"|[가나다라마바사아자차카타파하]\.\s"
+    r"|\(\d+\)\s"
+    r")"
+)
+
+_MAX_HEADING_LENGTH = 80
 
 
 def classify_block(
@@ -69,6 +79,13 @@ def classify_block(
         if pattern.match(stripped):
             return block_type, level
 
+    # Clauses (①②③) and items (가)/나)) are leaf-level structures — never headings.
+    if _CLAUSE_PATTERN.match(stripped):
+        return BlockType.CLAUSE, 0
+    for pattern in _ITEM_PATTERNS:
+        if pattern.match(stripped):
+            return BlockType.ITEM, 0
+
     # Font-based heading detection (when no structural pattern matches)
     if avg_font_size > 0:
         base_level = 0
@@ -81,20 +98,14 @@ def classify_block(
             for pattern, depth_offset in _NUMBERING_DEPTH:
                 if pattern.match(stripped):
                     return BlockType.HEADING, min(base_level + depth_offset, 6)
-            return BlockType.HEADING, base_level
-
-    # Clause (circled numbers)
-    if _CLAUSE_PATTERN.match(stripped):
-        return BlockType.CLAUSE, 0
+            if _ANY_NUMBERING_PREFIX.match(stripped):
+                return BlockType.HEADING, base_level
+            if is_bold and len(stripped) <= _MAX_HEADING_LENGTH:
+                return BlockType.HEADING, base_level
 
     # Subclause (numbered or Korean letter with dot)
     for pattern in _SUBCLAUSE_PATTERNS:
         if pattern.match(stripped):
             return BlockType.SUBCLAUSE, 0
-
-    # Item (Korean letter with closing paren)
-    for pattern in _ITEM_PATTERNS:
-        if pattern.match(stripped):
-            return BlockType.ITEM, 0
 
     return BlockType.TEXT, 0

@@ -85,9 +85,8 @@ def _create_auto() -> Any:
             logger.info("OCR backend: %s (auto)", name)
             return engine
 
-    raise RuntimeError(
-        "No OCR backend available: all backends failed to initialize"
-    )
+    logger.warning("No OCR backend available — OCR will be skipped for scanned pages")
+    return _NullOCREngine()
 
 
 def _create_easyocr() -> Any:
@@ -115,3 +114,13 @@ def _create_apple_vision() -> Any:
         return AppleVisionOCREngine()
     except Exception:
         return None
+
+
+class _NullOCREngine:
+    """Fallback when no OCR backend is installed. Always returns empty results."""
+
+    def recognize(self, image: object) -> list:
+        return []
+
+    def is_available(self) -> bool:
+        return False
