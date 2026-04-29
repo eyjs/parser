@@ -29,11 +29,12 @@ class TestTrySplit:
 
     def test_numbered_heading_with_body(self) -> None:
         result = _try_split(
-            "7. 기 타보험업 감독규정에 따라 할인할증을 적용하지 아니한다"
+            "4. 보험기간 및 보험료 납입에 관한 사항보험기간은 1년을 원칙으로 하되 장기계약을 체결할 수 있다"
         )
         assert result is not None
         heading, body = result
-        assert heading.startswith("7.")
+        assert heading.startswith("4.")
+        assert "보험기간은" in body
 
     def test_jo_heading_with_body(self) -> None:
         result = _try_split(
@@ -45,9 +46,12 @@ class TestTrySplit:
 
     def test_paren_heading_with_body(self) -> None:
         result = _try_split(
-            "(1) 계약의 취소보험계약자가 계약 체결 후 청약의 철회를 요청한 경우"
+            "(1) 계약의 해지 절차보험계약자가 계약 체결 후 청약의 철회를 요청한 경우"
         )
         assert result is not None
+        heading, body = result
+        assert "절차" in heading
+        assert "보험계약자" in body
 
     def test_no_split_for_plain_text(self) -> None:
         result = _try_split("보험업 감독규정에 따른 일반적인 문장입니다.")

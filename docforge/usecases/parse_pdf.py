@@ -54,6 +54,7 @@ from docforge.processing import (
 )
 from docforge.processing import column_detector
 from docforge.processing import confidence_scorer
+from docforge.processing.block_splitter import split_heading_body
 from docforge.processing.llm_fallback_router import run_llm_fallback, should_invoke_llm
 from docforge.processing.noise_detector import LearnedPatterns
 from docforge.usecases.profile_document import profile_document
@@ -464,7 +465,6 @@ def _process_single_page(
             )
 
         # Split blocks where heading + body are concatenated
-        from docforge.processing.block_splitter import split_heading_body
         clean_blocks = split_heading_body(clean_blocks)
 
         # Post-processing order

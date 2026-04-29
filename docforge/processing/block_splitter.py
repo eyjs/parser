@@ -7,10 +7,13 @@ This module detects such cases and splits them into separate blocks.
 
 from __future__ import annotations
 
+import logging
 import re
 
 from docforge.domain.models import TextBlock
 from docforge.domain.value_objects import BBox
+
+logger = logging.getLogger(__name__)
 
 
 # Patterns that indicate a heading prefix followed by a short title.
@@ -27,7 +30,7 @@ _HEADING_PREFIX = re.compile(
 # Common title-ending words in Korean legal/insurance docs.
 # When these appear followed immediately by hangul (no space), it's a concatenation point.
 _TITLE_END_SPLIT = re.compile(
-    r"(사항|기간|대상|범위|기타|채널|방법|내용|원칙|항목|목적|책임|의무|조건|절차|기준|보험)"
+    r"(사항|기간|대상|범위|기타|채널|방법|내용|원칙|항목|목적|책임|의무|조건|절차|기준)"
     r"(?=[가-힣])"
 )
 
@@ -45,6 +48,7 @@ def split_heading_body(blocks: list[TextBlock]) -> list[TextBlock]:
         parts = _try_split(block.text.strip())
         if parts is not None:
             heading_text, body_text = parts
+            logger.debug("Split block: heading=%r body=%r", heading_text[:40], body_text[:40])
             mid_y = block.bbox.y0 + (block.bbox.y1 - block.bbox.y0) * 0.4
 
             result.append(TextBlock(
