@@ -187,6 +187,25 @@
   </div>
 </section>
 
+<!-- Page viewer modal (opened when clicking a page cell) -->
+<div id="pageViewerModal" class="modal-overlay hidden" aria-modal="true" role="dialog" aria-labelledby="page-viewer-title">
+  <div class="modal-content modal-content--wide">
+    <div class="modal-header">
+      <h2 class="modal-title" id="page-viewer-title">페이지 미리보기</h2>
+      <div style="display: flex; align-items: center; gap: var(--space-2); margin-left: auto;">
+        <button id="pageViewerPrev" class="btn btn--secondary btn--sm" aria-label="이전 페이지">◀</button>
+        <span id="pageViewerCounter" class="text-muted text-sm">— / —</span>
+        <button id="pageViewerNext" class="btn btn--secondary btn--sm" aria-label="다음 페이지">▶</button>
+        <button id="pageViewerCopy" class="btn btn--secondary btn--sm" aria-label="복사">복사</button>
+        <button id="pageViewerClose" class="modal-close" aria-label="닫기">&times;</button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <pre id="pageViewerBody" class="page-viewer__body" tabindex="0"></pre>
+    </div>
+  </div>
+</div>
+
 <!-- Live preview (page-by-page) -->
 <section id="livePreviewSection" class="card mb-6 hidden" aria-labelledby="live-preview-heading">
   <div class="card__header" id="live-preview-heading">

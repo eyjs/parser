@@ -1323,3 +1323,43 @@ body.page-compare .page-content {
   display: flex;
   align-items: center;
 }
+
+/* Page cells become buttons after Phase B-3 click-to-view */
+button.page-cell {
+  background: #e9ecef;
+  font-family: inherit;
+  cursor: not-allowed;
+  padding: 0;
+}
+button.page-cell--done {
+  cursor: pointer;
+}
+button.page-cell--done:hover {
+  background: #b7e0c5;
+  border-color: #146c43;
+  transform: scale(1.08);
+}
+button.page-cell--done:focus-visible {
+  outline: 2px solid var(--color-primary, #0d6efd);
+  outline-offset: 2px;
+}
+
+/* Page viewer modal body */
+.page-viewer__body {
+  margin: 0;
+  padding: var(--space-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #fafafa;
+  border-radius: var(--radius-sm, 4px);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.tail-page__open {
+  margin-left: var(--space-2);
+  vertical-align: middle;
+}

@@ -100,13 +100,23 @@ function ensurePageGrid(total) {
   _livePreview.totalPages = total;
   livePreviewGrid.innerHTML = '';
   for (var i = 1; i <= total; i++) {
-    var cell = document.createElement('div');
+    var cell = document.createElement('button');
+    cell.type = 'button';
     cell.className = 'page-cell page-cell--pending';
     cell.dataset.page = String(i);
     cell.title = i + '페이지 (대기)';
     cell.textContent = i;
+    cell.disabled = true;
+    cell.addEventListener('click', onPageCellClick);
     livePreviewGrid.appendChild(cell);
   }
+}
+
+function onPageCellClick(e) {
+  var cell = e.currentTarget;
+  var page = parseInt(cell.dataset.page, 10);
+  if (!_livePreview.pages.hasOwnProperty(page)) return;
+  openPageViewer(page);
 }
 
 function markPageActive(page, total) {
@@ -124,7 +134,8 @@ function markPageDone(page, total, markdown) {
   var cell = livePreviewGrid.querySelector('[data-page="' + page + '"]');
   if (cell) {
     cell.className = 'page-cell page-cell--done';
-    cell.title = page + '페이지 (완료, ' + (markdown || '').length + '자)';
+    cell.title = page + '페이지 (클릭하여 보기 · ' + (markdown || '').length + '자)';
+    cell.disabled = false;
   }
   _livePreview.pages[page] = markdown || '';
   // Track recent order — newest first
@@ -135,6 +146,10 @@ function markPageDone(page, total, markdown) {
     _livePreview.recentOrder.length = _livePreview.maxRecent;
   }
   renderTail();
+  // If viewer is open and showing this page, refresh content live.
+  if (_pageViewer.openPage === page) {
+    renderPageViewer(page);
+  }
 }
 
 function renderTail() {
@@ -147,11 +162,22 @@ function renderTail() {
     var md = _livePreview.pages[page] || '';
     var preview = md.length > 600 ? md.slice(0, 600) + '\n\n…(생략)' : md;
     html += '<details class="tail-page" open>'
-      + '<summary>페이지 ' + page + ' <span class="text-muted text-sm">(' + md.length + '자)</span></summary>'
+      + '<summary>페이지 ' + page + ' <span class="text-muted text-sm">(' + md.length + '자)</span>'
+      + ' <button type="button" class="btn btn--secondary btn--sm tail-page__open" data-page="' + page + '">전체 보기</button>'
+      + '</summary>'
       + '<pre class="tail-page__body">' + escapeHtml(preview) + '</pre>'
       + '</details>';
   });
   livePreviewTail.innerHTML = html;
+  // Wire "전체 보기" buttons
+  Array.prototype.forEach.call(livePreviewTail.querySelectorAll('.tail-page__open'), function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var page = parseInt(btn.dataset.page, 10);
+      openPageViewer(page);
+    });
+  });
 }
 
 function finalizeLivePreview() {
@@ -159,6 +185,114 @@ function finalizeLivePreview() {
     el.className = 'stage-pill stage-pill--done';
   });
   livePreviewCounter.textContent = '✓ ' + _livePreview.totalPages + ' / ' + _livePreview.totalPages;
+}
+
+// ---------------------------------------------------------------------------
+// Page viewer modal — click any done page cell to inspect its markdown
+// ---------------------------------------------------------------------------
+
+var _pageViewer = { openPage: null };
+var pageViewerModal = document.getElementById('pageViewerModal');
+var pageViewerBody = document.getElementById('pageViewerBody');
+var pageViewerTitle = document.getElementById('page-viewer-title');
+var pageViewerCounter = document.getElementById('pageViewerCounter');
+var pageViewerPrev = document.getElementById('pageViewerPrev');
+var pageViewerNext = document.getElementById('pageViewerNext');
+var pageViewerCopy = document.getElementById('pageViewerCopy');
+var pageViewerClose = document.getElementById('pageViewerClose');
+
+function openPageViewer(page) {
+  _pageViewer.openPage = page;
+  renderPageViewer(page);
+  pageViewerModal.classList.remove('hidden');
+  // Keyboard hooks
+  document.addEventListener('keydown', onPageViewerKey);
+}
+
+function closePageViewer() {
+  _pageViewer.openPage = null;
+  pageViewerModal.classList.add('hidden');
+  document.removeEventListener('keydown', onPageViewerKey);
+}
+
+function renderPageViewer(page) {
+  var md = _livePreview.pages[page];
+  if (md === undefined) {
+    pageViewerBody.textContent = '(아직 처리되지 않은 페이지입니다)';
+  } else {
+    pageViewerBody.textContent = md || '(빈 페이지)';
+  }
+  pageViewerTitle.textContent = '페이지 ' + page + ' 미리보기';
+  pageViewerCounter.textContent = page + ' / ' + (_livePreview.totalPages || '?');
+  // Update prev/next disabled state
+  pageViewerPrev.disabled = !findAdjacentDonePage(page, -1);
+  pageViewerNext.disabled = !findAdjacentDonePage(page, +1);
+}
+
+function findAdjacentDonePage(current, direction) {
+  // Walk through completed pages (in numeric order) looking for the
+  // nearest neighbour in ``direction``. Returns the page number or null.
+  var donePages = Object.keys(_livePreview.pages)
+    .map(function (k) { return parseInt(k, 10); })
+    .filter(function (n) { return !isNaN(n); })
+    .sort(function (a, b) { return a - b; });
+  if (donePages.length === 0) return null;
+  if (direction > 0) {
+    for (var i = 0; i < donePages.length; i++) {
+      if (donePages[i] > current) return donePages[i];
+    }
+  } else {
+    for (var j = donePages.length - 1; j >= 0; j--) {
+      if (donePages[j] < current) return donePages[j];
+    }
+  }
+  return null;
+}
+
+function onPageViewerKey(e) {
+  if (e.key === 'Escape') {
+    closePageViewer();
+  } else if (e.key === 'ArrowLeft') {
+    var prev = findAdjacentDonePage(_pageViewer.openPage, -1);
+    if (prev) openPageViewer(prev);
+  } else if (e.key === 'ArrowRight') {
+    var next = findAdjacentDonePage(_pageViewer.openPage, +1);
+    if (next) openPageViewer(next);
+  }
+}
+
+if (pageViewerClose) {
+  pageViewerClose.addEventListener('click', closePageViewer);
+}
+if (pageViewerModal) {
+  pageViewerModal.addEventListener('click', function (e) {
+    if (e.target === pageViewerModal) closePageViewer();
+  });
+}
+if (pageViewerPrev) {
+  pageViewerPrev.addEventListener('click', function () {
+    var prev = findAdjacentDonePage(_pageViewer.openPage, -1);
+    if (prev) openPageViewer(prev);
+  });
+}
+if (pageViewerNext) {
+  pageViewerNext.addEventListener('click', function () {
+    var next = findAdjacentDonePage(_pageViewer.openPage, +1);
+    if (next) openPageViewer(next);
+  });
+}
+if (pageViewerCopy) {
+  pageViewerCopy.addEventListener('click', function () {
+    var page = _pageViewer.openPage;
+    if (page === null) return;
+    var md = _livePreview.pages[page] || '';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(md).then(function () {
+        pageViewerCopy.textContent = '✓ 복사됨';
+        setTimeout(function () { pageViewerCopy.textContent = '복사'; }, 1500);
+      });
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
