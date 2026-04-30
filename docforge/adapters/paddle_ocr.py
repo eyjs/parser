@@ -11,7 +11,7 @@ from typing import Any
 
 from docforge.domain.enums import BlockType
 from docforge.domain.models import TextBlock
-from docforge.domain.value_objects import BBox, FontInfo
+from docforge.domain.value_objects import BBox, FontInfo, RawImage
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +81,16 @@ class PaddleOCREngine:
         import numpy as np
         from PIL import Image
 
-        # Convert PIL Image to numpy array for PaddleOCR
-        if isinstance(image, Image.Image):
+        # Coerce input to numpy array — RawImage / PIL.Image / ndarray supported
+        if isinstance(image, RawImage):
+            img_array = image.data
+        elif isinstance(image, Image.Image):
             img_array = np.array(image)
-        else:
+        elif isinstance(image, np.ndarray):
             img_array = image
+        else:
+            logger.error("PaddleOCR: unsupported image type %s", type(image).__name__)
+            return []
 
         try:
             results = ocr.ocr(img_array, cls=True)
