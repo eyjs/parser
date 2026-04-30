@@ -26,6 +26,9 @@ var uploadCards = document.getElementById('uploadCards');
 
 var _activeUploads = {};  // task_id -> { filename, status, es }
 var _queuePollTimer = null;
+// Latest registry snapshot keyed by task_id — populated by pollQueueStatus
+// so the history table can render in-flight progress.
+var _activeStateByTaskId = {};
 
 // Live preview state (most recently active task drives the preview panel)
 var _livePreview = {
@@ -651,12 +654,45 @@ function pollQueueStatus() {
         queueBanner.classList.add('hidden');
         stopQueuePolling();
         dropZone.removeAttribute('aria-disabled');
-        return;
+      } else {
+        queueBannerText.textContent = '처리 중 ' + d.running + '개 / 대기 ' + d.queued + '개';
+        queueBanner.classList.remove('hidden');
       }
-      queueBannerText.textContent = '처리 중 ' + d.running + '개 / 대기 ' + d.queued + '개';
-      queueBanner.classList.remove('hidden');
     })
     .catch(function () {});
+
+  // Refresh per-task progress for the history table.
+  fetch('/api/parse/active')
+    .then(function (res) { return res.json(); })
+    .then(function (json) {
+      if (!json.success) return;
+      _activeStateByTaskId = {};
+      (json.data || []).forEach(function (t) { _activeStateByTaskId[t.task_id] = t; });
+      // Refresh history rows in-place so the user sees live progress.
+      annotateHistoryRowsWithProgress();
+    })
+    .catch(function () {});
+}
+
+function annotateHistoryRowsWithProgress() {
+  if (!historyBody) return;
+  Array.prototype.forEach.call(historyBody.querySelectorAll('tr[data-task-id]'), function (row) {
+    var taskId = row.dataset.taskId;
+    var snap = _activeStateByTaskId[taskId];
+    var statusCell = row.children[1];
+    if (!statusCell) return;
+    if (snap && (snap.status === 'queued' || snap.status === 'running')) {
+      var label = snap.status === 'queued'
+        ? '대기 (' + (snap.completed_pages || 0) + '/' + (snap.total_pages || 0) + ')'
+        : '처리 중 ' + (snap.completed_pages || 0) + '/' + (snap.total_pages || 0)
+          + ' — ' + (snap.pct || 0) + '%';
+      statusCell.innerHTML = '';
+      var span = document.createElement('span');
+      span.className = 'badge badge--running';
+      span.textContent = label;
+      statusCell.appendChild(span);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +812,8 @@ function renderHistory(records) {
 
     historyBody.appendChild(tr);
   });
+
+  annotateHistoryRowsWithProgress();
 }
 
 /**
@@ -915,7 +953,133 @@ if (btnArchitecture && archModal) {
 }
 
 // ---------------------------------------------------------------------------
+// Background task restoration (page reload)
+// ---------------------------------------------------------------------------
+
+/**
+ * On page load, fetch active tasks and rebuild upload cards + live preview.
+ * Then re-subscribe via SSE to merge into the live stream (server emits a
+ * `catchup` event first so we don't miss late events between REST + SSE).
+ */
+function restoreActiveTasks() {
+  return fetch('/api/parse/active')
+    .then(function (res) { return res.json(); })
+    .then(function (json) {
+      if (!json.success || !Array.isArray(json.data) || json.data.length === 0) return;
+
+      var tasks = json.data;
+
+      tasks.forEach(function (task) {
+        var cardId = 'restore-' + task.task_id;
+        if (document.getElementById(cardId)) return;
+        addUploadCard(cardId, task.filename, task.status === 'queued' ? 'queued' : 'running');
+        updateUploadCard(cardId, task.status === 'queued' ? 'queued' : 'running',
+                         (task.pct || 0) + '% - ' + (task.completed_pages || 0) + '/' + (task.total_pages || 0),
+                         task.task_id);
+        _activeUploads[task.task_id] = { filename: task.filename, cardId: cardId };
+      });
+
+      // Restore the most recent task's live preview, then re-subscribe.
+      var latest = tasks[0];
+      return restoreLivePreview(latest.task_id).then(function () {
+        // Subscribe each task to SSE — same multi-file handler is reused.
+        tasks.forEach(function (task) {
+          var entry = _activeUploads[task.task_id];
+          if (entry) subscribeToProgressMulti(task.task_id, entry.cardId);
+        });
+        startQueuePolling();
+      });
+    })
+    .catch(function () { /* silent — best effort */ });
+}
+
+/**
+ * Pull state + completed page list, then fetch each page's markdown.
+ * Restores grid colours and the recent-pages tail.
+ */
+function restoreLivePreview(taskId) {
+  ensureLivePreview(taskId);
+
+  return fetch('/api/parse/' + taskId + '/state')
+    .then(function (res) { return res.json(); })
+    .then(function (json) {
+      if (!json.success) return null;
+      var state = json.data;
+      if (state.total_pages > 0) ensurePageGrid(state.total_pages);
+      _livePreview.totalPages = state.total_pages || 0;
+      // Surface stage state on the timeline if available
+      if (state.current_stage) updateStagePill(state.current_stage);
+      livePreviewCounter.textContent = (state.completed_pages || 0) + ' / ' + (state.total_pages || 0);
+      return state;
+    })
+    .then(function (state) {
+      if (!state) return;
+      return fetch('/api/parse/' + taskId + '/pages')
+        .then(function (res) { return res.json(); })
+        .then(function (json) {
+          if (!json.success) return;
+          var completed = json.data.completed || [];
+          // Fetch page markdown in parallel (best-effort).
+          return Promise.all(completed.map(function (pageNum) {
+            return fetch('/api/parse/' + taskId + '/page/' + pageNum)
+              .then(function (r) { return r.json(); })
+              .then(function (pj) {
+                if (pj.success) {
+                  markPageDone(pageNum, state.total_pages || _livePreview.totalPages,
+                               pj.data.markdown || '');
+                }
+              })
+              .catch(function () {});
+          }));
+        });
+    })
+    .catch(function () {});
+}
+
+// Augment the SSE handler with a one-shot `catchup` listener attached to
+// the EventSource created in subscribeToProgressMulti / subscribeToProgress.
+// Because both functions create their own EventSource we patch each by
+// monkey-wrapping via a delegated listener inside this file.
+//
+// Implementation: rather than modify both subscribe* functions we add the
+// listener via `addEventListener('catchup', ...)` after they create the
+// EventSource. To do that without rewriting them, we wrap EventSource here
+// to auto-attach a catchup handler when the URL targets /api/parse/.
+(function patchEventSource() {
+  if (!window.EventSource || window.EventSource.__docforgePatched) return;
+  var Original = window.EventSource;
+  function PatchedES(url, opts) {
+    var es = new Original(url, opts);
+    if (typeof url === 'string' && url.indexOf('/api/parse/') === 0) {
+      es.addEventListener('catchup', function (e) {
+        try {
+          var snapshot = JSON.parse(e.data);
+          // Catch-up arrives once per (re)connection. Only the live preview
+          // panel needs visual refresh — REST restoration already filled in
+          // page markdowns, so we just sync counters/stage.
+          if (_livePreview.taskId === snapshot.task_id) {
+            if (snapshot.total_pages > 0) ensurePageGrid(snapshot.total_pages);
+            _livePreview.totalPages = snapshot.total_pages || _livePreview.totalPages;
+            if (snapshot.current_stage) updateStagePill(snapshot.current_stage);
+            livePreviewCounter.textContent =
+              (snapshot.completed_pages || 0) + ' / ' + (snapshot.total_pages || 0);
+          }
+        } catch (_) {}
+      });
+    }
+    return es;
+  }
+  PatchedES.prototype = Original.prototype;
+  PatchedES.CONNECTING = Original.CONNECTING;
+  PatchedES.OPEN = Original.OPEN;
+  PatchedES.CLOSED = Original.CLOSED;
+  PatchedES.__docforgePatched = true;
+  window.EventSource = PatchedES;
+})();
+
+// ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
 loadHistory();
+restoreActiveTasks();

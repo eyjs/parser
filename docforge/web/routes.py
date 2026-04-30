@@ -25,6 +25,11 @@ from docforge.web.sse import (
     ProgressTracker,
 )
 from docforge.web.storage import TaskStore
+from docforge.web.task_state import (
+    registry as task_registry,
+    state_full,
+    state_summary,
+)
 from docforge.web.worker import (
     get_tracker as _get_tracker,
     set_tracker as _set_tracker,
@@ -139,8 +144,9 @@ def api_parse() -> Response:
         except OSError as exc:
             continue
 
-        # Create progress tracker
-        tracker = ProgressTracker()
+        # Register task state (for REST catch-up) and bind tracker to it.
+        task_registry.create(task_id, filename)
+        tracker = ProgressTracker(task_id=task_id)
         _set_tracker(task_id, tracker)
 
         # Submit to worker queue
@@ -163,34 +169,100 @@ def api_parse() -> Response:
 
 @bp.route("/api/parse/<task_id>/status")
 def api_parse_status(task_id: str) -> Response:
-    """SSE 스트림 — 파싱 진행률 실시간 전달."""
+    """SSE 스트림 — 파싱 진행률 실시간 전달.
+
+    재연결 시나리오: 클라이언트가 새로고침 후 다시 구독하면 먼저
+    ``catchup`` 이벤트로 누적 스냅샷을 한 번 보내고, 살아있는
+    tracker에 합류한다. 이미 완료된 경우 ``done``/``error``만 보낸다.
+    """
+    import json as _json
+
     tracker = _get_tracker(task_id)
+    # Lock-safe snapshot — see TaskRegistry.snapshot_full. Markdown is
+    # excluded from catch-up; clients fetch it via REST to avoid replaying
+    # hundreds of KB over SSE on reconnect.
+    catchup_payload = task_registry.snapshot_full(task_id)
+    state = task_registry.get(task_id)
+
     if tracker is None:
-        # Task already completed or unknown — return stored status
+        # No live tracker — fall back to stored status (legacy + finished tasks).
         store = _get_store()
         record = store.get(task_id)
-        if record is None:
+        if record is None and state is None:
             return jsonify({"success": False, "error": {"code": "NOT_FOUND", "message": "작업을 찾을 수 없습니다."}}), 404
 
-        import json
-
         def _static_stream():
-            if record.status == "done":
-                payload = json.dumps({"event": EVT_DONE, "data": {"message": "완료", "pct": 100}})
-            else:
-                payload = json.dumps({"event": EVT_ERROR, "data": {"message": record.error or "오류 발생", "pct": 0}})
-            yield f"data: {payload}\n\n"
+            if catchup_payload is not None:
+                yield f"event: catchup\ndata: {_json.dumps(catchup_payload)}\n\n"
+            if record is not None and record.status == "done":
+                payload = _json.dumps({"event": EVT_DONE, "data": {"message": "완료", "pct": 100}})
+                yield f"data: {payload}\n\n"
+            elif record is not None:
+                payload = _json.dumps({"event": EVT_ERROR, "data": {"message": record.error or "오류 발생", "pct": 0}})
+                yield f"data: {payload}\n\n"
+            elif state is not None and state.status == "done":
+                yield f"data: {_json.dumps({'event': EVT_DONE, 'data': {'pct': 100}})}\n\n"
+            elif state is not None and state.status == "error":
+                yield f"data: {_json.dumps({'event': EVT_ERROR, 'data': {'message': state.error_message or '', 'pct': 0}})}\n\n"
 
         return Response(stream_with_context(_static_stream()), mimetype="text/event-stream")
 
+    # Tracker is live: emit catchup first, then merge into the live stream.
+    def _live_stream():
+        if catchup_payload is not None:
+            yield f"event: catchup\ndata: {_json.dumps(catchup_payload)}\n\n"
+        for chunk in tracker.stream():
+            yield chunk
+
     return Response(
-        stream_with_context(tracker.stream()),
+        stream_with_context(_live_stream()),
         mimetype="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# API: live state catch-up (REST)
+# ---------------------------------------------------------------------------
+
+
+@bp.route("/api/parse/active")
+def api_parse_active() -> Response:
+    """현재 큐/실행 중인 작업 목록."""
+    return jsonify({"success": True, "data": task_registry.snapshot_active()})
+
+
+@bp.route("/api/parse/<task_id>/state")
+def api_parse_state(task_id: str) -> Response:
+    """단일 작업의 누적 스냅샷 (markdown 제외)."""
+    snapshot = task_registry.snapshot_full(task_id)
+    if snapshot is None:
+        return jsonify({"success": False, "error": {"code": "NOT_FOUND", "message": "작업을 찾을 수 없습니다."}}), 404
+    return jsonify({"success": True, "data": snapshot})
+
+
+@bp.route("/api/parse/<task_id>/pages")
+def api_parse_pages(task_id: str) -> Response:
+    """완료된 페이지 번호 목록."""
+    snapshot = task_registry.snapshot_completed_pages(task_id)
+    if snapshot is None:
+        return jsonify({"success": False, "error": {"code": "NOT_FOUND", "message": "작업을 찾을 수 없습니다."}}), 404
+    return jsonify({"success": True, "data": snapshot})
+
+
+@bp.route("/api/parse/<task_id>/page/<int:page_num>")
+def api_parse_page(task_id: str, page_num: int) -> Response:
+    """특정 페이지 markdown."""
+    md = task_registry.get_page_markdown(task_id, page_num)
+    if md is None:
+        # Could be missing task or missing page — disambiguate.
+        if task_registry.get(task_id) is None:
+            return jsonify({"success": False, "error": {"code": "NOT_FOUND", "message": "작업을 찾을 수 없습니다."}}), 404
+        return jsonify({"success": False, "error": {"code": "PAGE_NOT_READY", "message": "해당 페이지는 아직 처리되지 않았습니다."}}), 404
+    return jsonify({"success": True, "data": {"page": page_num, "markdown": md}})
 
 
 # ---------------------------------------------------------------------------

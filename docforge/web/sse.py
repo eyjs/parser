@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
-from typing import Generator
+from typing import Generator, Optional
+
+from docforge.web.task_state import TaskRegistry, registry as _default_registry
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Progress event constants
@@ -32,19 +37,47 @@ _STAGE_PCT: dict[str, int] = {
 
 
 class ProgressTracker:
-    """Thread-safe progress tracker that drives an SSE stream."""
+    """Thread-safe progress tracker that drives an SSE stream.
 
-    def __init__(self) -> None:
+    When created with a ``task_id`` and ``registry``, every ``push`` call
+    also accumulates the event into the registry's ``TaskState`` so that
+    a disconnected client can later catch up via REST.
+    """
+
+    def __init__(
+        self,
+        task_id: Optional[str] = None,
+        registry: Optional[TaskRegistry] = None,
+    ) -> None:
         self._queue: queue.Queue[dict | None] = queue.Queue()
         self._done = threading.Event()
+        self.task_id = task_id
+        self._registry = registry if registry is not None else _default_registry
+        self._persistence_warned = False  # log first persistence failure only
 
     # ------------------------------------------------------------------
     # Producer API (called from background thread)
     # ------------------------------------------------------------------
 
     def push(self, event: str, data: dict) -> None:
-        """Enqueue a named event with its payload."""
+        """Enqueue a named event with its payload.
+
+        If a ``task_id`` is bound, the event is also persisted into the
+        ``TaskRegistry`` for later catch-up.
+        """
         self._queue.put({"event": event, "data": data})
+        if self.task_id is not None:
+            try:
+                self._registry.apply_event(self.task_id, event, data)
+            except Exception:
+                # Persistence must never break the live stream — but log
+                # the first failure so the issue is at least visible.
+                if not self._persistence_warned:
+                    logger.warning(
+                        "TaskRegistry.apply_event failed for task=%s event=%s",
+                        self.task_id, event, exc_info=True,
+                    )
+                    self._persistence_warned = True
 
     def push_stage(self, event: str, message: str) -> None:
         """Convenience wrapper for well-known pipeline stages."""
