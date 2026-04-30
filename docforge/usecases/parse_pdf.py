@@ -112,8 +112,30 @@ def parse_pdf(
     )
 
     ocr_semaphore = threading.Semaphore(config.max_ocr_workers)
+
+    # Per-page early markdown emit — lets the SSE/dashboard render each
+    # page as soon as it finishes parsing instead of waiting for [6/6].
+    def _emit_page_markdown(result: PageResult) -> None:
+        if on_page_done is None:
+            return
+        page_content = result.page_content
+        if page_content is None:
+            return
+        try:
+            md = markdown_assembler.assemble_page(page_content, avg_font_size, config)
+        except Exception:
+            logger.warning("Per-page markdown assembly failed", exc_info=True)
+            return
+        if not md.strip():
+            return
+        try:
+            on_page_done(page_content.page_num, md)
+        except Exception:
+            logger.warning("on_page_done callback failed", exc_info=True)
+
     ordered_results, page_errors = coordinator.run(
         pdf_path, total_pages, ocr_semaphore, _log,
+        on_page_complete=_emit_page_markdown,
     )
 
     (
@@ -129,8 +151,10 @@ def parse_pdf(
     parsed_pages = _h.merge_cross_page_tables(parsed_pages, all_page_tables, config)
 
     _log("[6/6] Assembling markdown...")
+    # on_page_done already fired per-page in the coordinator loop above —
+    # don't double-emit here, just collect markdowns for finalization.
     page_markdowns = _h.assemble_page_markdowns(
-        parsed_pages, avg_font_size, config, on_page_done,
+        parsed_pages, avg_font_size, config, on_page_done=None,
     )
     _h.log_records(llm_fallback_records, all_region_vlm_records)
 

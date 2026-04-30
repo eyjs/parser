@@ -137,36 +137,6 @@
         </div>
       </div>
 
-      <!-- Module detail -->
-      <div class="arch-detail">
-        <h3>모듈 구조 (클린 아키텍처 4레이어)</h3>
-        <div class="arch-modules">
-          <div class="arch-module">
-            <div class="arch-module__header">domain/</div>
-            <div class="arch-module__body">models · ports (Protocol) · enums · value_objects<br>TextBlock · Table · LayoutBlock · ParsedImage · PageError</div>
-          </div>
-          <div class="arch-module">
-            <div class="arch-module__header">processing/</div>
-            <div class="arch-module__body">block_splitter · line_merger · text_structurer · noise_detector<br>heading_hierarchy · layout_router · image_extractor · caption_matcher<br>page_classifier · markdown_assembler · table_quality_scorer<br>region_vlm_router · domain_profiles/ (KoreanLegal, EnglishAcademic)</div>
-          </div>
-          <div class="arch-module">
-            <div class="arch-module__header">adapters/</div>
-            <div class="arch-module__body">pymupdf_reader · pdfplumber_tables · paddle_table<br>easyocr_engine · apple_vision_engine · paddle_ocr<br>morpheme_analyzer (Kiwi) · vision_llm_engine (Qwen2-VL)<br>layout/surya_adapter · region_crop · opencv_preprocessor</div>
-          </div>
-          <div class="arch-module">
-            <div class="arch-module__header">usecases/</div>
-            <div class="arch-module__body">parse_pdf (orchestrator) · page_processor · pipeline_coordinator<br>profile_document · ocr_factory<br>chunking/ (by_title · by_page · semantic · fixed) · serializer</div>
-          </div>
-          <div class="arch-module">
-            <div class="arch-module__header">infrastructure/</div>
-            <div class="arch-module__body">config (ParserConfig · TableConfig · ScorerWeights · OCR/Layout 옵션)</div>
-          </div>
-          <div class="arch-module">
-            <div class="arch-module__header">web/</div>
-            <div class="arch-module__body">routes · worker (ThreadPool) · sse (실시간 스트림)<br>storage · app · templates (dashboard · editor · verify)</div>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
 </div>

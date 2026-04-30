@@ -36,6 +36,7 @@ class PipelineCoordinator:
         total_pages: int,
         ocr_semaphore: threading.Semaphore,
         log_fn: "Callable[[str], None]",
+        on_page_complete: "Callable[[PageResult], None] | None" = None,
     ) -> tuple[list[PageResult], list[PageError]]:
         """Process all pages and return ``(ordered_results, page_errors)``.
 
@@ -82,6 +83,11 @@ class PipelineCoordinator:
                         noise=NoiseStats(), is_toc=False, ocr_used=False,
                     )
                 raw_results.append((page_idx, result))
+                if on_page_complete is not None:
+                    try:
+                        on_page_complete(result)
+                    except Exception:  # pragma: no cover - listener failures
+                        logger.warning("on_page_complete callback failed", exc_info=True)
 
         raw_results.sort(key=lambda x: x[0])
         return [r for _, r in raw_results], page_errors
