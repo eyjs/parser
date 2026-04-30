@@ -105,6 +105,28 @@ def check_preprocessing() -> bool:
         return False
 
 
+def build_layout_detector(config: ParserConfig):
+    """Construct the layout detector indicated by ``config``.
+
+    Returns a :class:`NullLayoutDetector` when layout detection is
+    disabled or Surya is not importable. Adapters are imported lazily
+    so the cold path stays fast.
+    """
+    from docforge.adapters.layout import NullLayoutDetector, SuryaLayoutDetector
+
+    if not config.layout_detection_enabled:
+        return NullLayoutDetector()
+    try:
+        detector = SuryaLayoutDetector()
+        if detector.is_available():
+            return detector
+        logger.info("Surya not installed — falling back to NullLayoutDetector")
+        return NullLayoutDetector()
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("Layout detector init failed", exc_info=True)
+        return NullLayoutDetector()
+
+
 def build_llm_engine(config: ParserConfig) -> "VisionLLMEngine | None":
     if not (config.llm_fallback_enabled or config.region_vlm_enabled):
         return None
@@ -195,6 +217,8 @@ def merge_cross_page_tables(
             raw_text=page.raw_text,
             width=page.width,
             height=page.height,
+            confidence=page.confidence,
+            images=page.images,
         ))
     return updated
 

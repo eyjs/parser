@@ -64,6 +64,18 @@ Examples:
         "--footer-ratio", type=float, default=0.08,
         help="Footer area ratio (default: 0.08)",
     )
+    parser.add_argument(
+        "--extract-images", action="store_true",
+        help="Extract embedded images and emit ![caption](path) markdown",
+    )
+    parser.add_argument(
+        "--image-dir", default="images",
+        help="Directory (relative or absolute) for extracted image files",
+    )
+    parser.add_argument(
+        "--enable-layout", action="store_true",
+        help="Enable Surya layout detection (requires surya-ocr installed)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -76,7 +88,11 @@ Examples:
         header_ratio=args.header_ratio,
         footer_ratio=args.footer_ratio,
         dpi=args.dpi,
+        layout_detection_enabled=args.enable_layout,
+        image_extraction_enabled=args.extract_images,
+        image_output_dir=args.image_dir if args.extract_images else None,
     )
+
 
     try:
         result = parse_pdf(pdf_path, config=config, force_ocr=args.force_ocr)
@@ -103,6 +119,20 @@ Examples:
         )
         write_text(output_path, result.markdown)
         print(f"\nMarkdown saved: {output_path}")
+
+        if args.extract_images:
+            img_root = Path(args.image_dir)
+            if not img_root.is_absolute():
+                img_root = output_path.parent / args.image_dir
+            img_root.mkdir(parents=True, exist_ok=True)
+            count = 0
+            for page in result.pages:
+                for image in page.images:
+                    ext = "jpg" if image.format == "jpeg" else image.format
+                    fname = f"page-{image.page_num}-img-{image.block_id}.{ext}"
+                    (img_root / fname).write_bytes(image.data)
+                    count += 1
+            print(f"Images saved: {count} -> {img_root}")
 
     # Verification report
     if args.verify:

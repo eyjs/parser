@@ -48,7 +48,12 @@ from docforge.usecases.ocr_factory import create_ocr_engine
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from docforge.domain.ports import DomainProfile, MorphemeAnalyzer, VisionLLMEngine
+    from docforge.domain.ports import (
+        DomainProfile,
+        LayoutDetector,
+        MorphemeAnalyzer,
+        VisionLLMEngine,
+    )
 
 
 @dataclass(frozen=True)
@@ -83,6 +88,7 @@ class PageProcessor:
         avg_line_gap: float,
         patterns: LearnedPatterns,
         use_ocr: bool,
+        layout_detector: "LayoutDetector | None" = None,
     ) -> None:
         self._config = config
         self._llm_engine = llm_engine
@@ -93,6 +99,7 @@ class PageProcessor:
         self._avg_line_gap = avg_line_gap
         self._patterns = patterns
         self._use_ocr = use_ocr
+        self._layout_detector = layout_detector
 
     def process(
         self,
@@ -133,8 +140,25 @@ class PageProcessor:
             image_area = sum(img["area"] for img in images)
             image_ratio = image_area / max(page_area, 1.0)
 
-            page_type = page_classifier.classify_page(
-                char_count, has_images, image_ratio, raw_text, config
+            # Need blocks for COVER/TOC heuristics — extract eagerly only
+            # when the page has enough text to be a candidate.
+            preliminary_blocks: list[TextBlock] = []
+            if char_count >= 5:
+                try:
+                    preliminary_blocks = reader.extract_text_blocks(doc, page_idx)
+                except Exception:
+                    preliminary_blocks = []
+
+            page_type = page_classifier.classify_page_with_blocks(
+                page_idx=page_idx,
+                char_count=char_count,
+                has_images=has_images,
+                image_area_ratio=image_ratio,
+                raw_text=raw_text,
+                blocks=preliminary_blocks,
+                page_width=width,
+                page_height=height,
+                config=config,
             )
 
             if page_type == PageType.NOISE:
@@ -143,12 +167,35 @@ class PageProcessor:
                     noise=NoiseStats(), is_toc=True, ocr_used=False,
                 )
 
+            # COVER/TOC pages bypass the heavy classification pipeline.
+            # We preserve their text as-is (no heading hierarchy, no line
+            # merging) so the markdown serializer can render them under
+            # explicit ``## [표지]`` / ``## [목차]`` section headers.
+            if page_type in (PageType.COVER, PageType.TOC):
+                page_content = PageContent(
+                    page_num=page_idx + 1,
+                    page_type=page_type,
+                    blocks=tuple(preliminary_blocks),
+                    tables=(),
+                    raw_text=raw_text,
+                    width=width,
+                    height=height,
+                    confidence=None,
+                )
+                return PageResult(
+                    page_content=page_content,
+                    tables_info=None,
+                    noise=NoiseStats(),
+                    is_toc=False,
+                    ocr_used=False,
+                )
+
             blocks: list[TextBlock] = []
             page_gate_result = None
             page_ocr_used = False
 
             if page_type in (PageType.DIGITAL, PageType.MIXED):
-                blocks = reader.extract_text_blocks(doc, page_idx)
+                blocks = preliminary_blocks or reader.extract_text_blocks(doc, page_idx)
 
             if page_type == PageType.SCANNED and self._use_ocr:
                 with ocr_semaphore:
@@ -196,6 +243,17 @@ class PageProcessor:
             merged_blocks = self._classify_and_merge(clean_blocks, page_type)
             merged_blocks = assign_hierarchy(merged_blocks, page_num=page_idx + 1)
 
+            # Phase B-1: layout-detector boost (opt-in via config flag)
+            layout_blocks = self._maybe_detect_layout(reader, doc, page_idx)
+            if layout_blocks:
+                from docforge.processing.layout_router import merge_layout_with_text
+
+                merged_blocks = merge_layout_with_text(
+                    merged_blocks,
+                    layout_blocks,
+                    iou_threshold=config.layout_iou_threshold,
+                )
+
             page_tables = table_extractor.extract_from_page(
                 plumber_doc, page_idx, page_width=width, page_height=height,
             )
@@ -222,6 +280,11 @@ class PageProcessor:
                 merged_blocks, page_type, width, height, page_gate_result,
             )
 
+            # Phase B-2: image extraction + caption matching (opt-in)
+            page_images = self._maybe_extract_images(
+                reader, doc, page_idx, merged_blocks, layout_blocks,
+            )
+
             page_content = PageContent(
                 page_num=page_idx + 1,
                 page_type=page_type,
@@ -231,6 +294,7 @@ class PageProcessor:
                 width=width,
                 height=height,
                 confidence=page_confidence,
+                images=tuple(page_images),
             )
 
             llm_record = None
@@ -251,6 +315,7 @@ class PageProcessor:
                         width=width,
                         height=height,
                         confidence=page_confidence,
+                        images=tuple(page_images),
                     )
 
             return PageResult(
@@ -293,6 +358,55 @@ class PageProcessor:
             ocr_blocks = ocr_engine.recognize(raw_img)
         ocr_blocks = ocr_corrector.correct_blocks(ocr_blocks, config)
         return ocr_blocks, page_gate_result
+
+    def _maybe_detect_layout(
+        self,
+        reader: PyMuPDFReader,
+        doc: object,
+        page_idx: int,
+    ):
+        """Run layout detection if enabled and the backend is available."""
+        from docforge.adapters.image_converter import pil_to_raw_image
+
+        config = self._config
+        detector = self._layout_detector
+        if not config.layout_detection_enabled or detector is None:
+            return []
+        if not detector.is_available():
+            return []
+        try:
+            image = reader.render_page_image(doc, page_idx, config.dpi)
+            raw_img = pil_to_raw_image(image)
+            return detector.detect(raw_img, page_num=page_idx + 1)
+        except Exception:  # pragma: no cover - defensive
+            return []
+
+    def _maybe_extract_images(
+        self,
+        reader: PyMuPDFReader,
+        doc: object,
+        page_idx: int,
+        text_blocks: list[TextBlock],
+        layout_blocks,
+    ):
+        """Extract images and attach captions when extraction is enabled."""
+        config = self._config
+        if not config.image_extraction_enabled:
+            return []
+        try:
+            from docforge.processing.caption_matcher import match_captions
+            from docforge.processing.image_extractor import extract_images
+            from docforge.processing.layout_router import build_layout_label_map
+
+            images = extract_images(reader, doc, page_idx)
+            if not images:
+                return []
+            label_map = build_layout_label_map(
+                text_blocks, layout_blocks or [], iou_threshold=config.layout_iou_threshold,
+            )
+            return match_captions(images, text_blocks, layout_label_map=label_map)
+        except Exception:  # pragma: no cover - defensive
+            return []
 
     def _classify_and_merge(
         self,

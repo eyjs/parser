@@ -13,12 +13,22 @@ class DocumentComplexity(str, Enum):
 
 
 class PageType(str, Enum):
-    """Per-page type classification."""
+    """Per-page type classification.
+
+    ``COVER`` and ``TOC`` were split out from the legacy ``NOISE`` bucket
+    in Phase B-3 so cover/table-of-contents pages can be preserved with
+    dedicated section markers in the markdown output instead of being
+    silently dropped. Backward compatibility: pages that previously fell
+    into ``NOISE`` still classify as ``NOISE`` unless they match the
+    cover/TOC heuristics.
+    """
 
     DIGITAL = "digital"
     SCANNED = "scanned"
     MIXED = "mixed"
     NOISE = "noise"
+    COVER = "cover"
+    TOC = "toc"
 
 
 class BlockType(str, Enum):

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from docforge.domain.enums import BlockType
+from docforge.domain.enums import BlockType, PageType
 from docforge.domain.models import (
     Metadata,
     PageContent,
@@ -86,6 +86,10 @@ def table_to_markdown(table: Table) -> str:
     return "\n".join(lines) + review_note
 
 
+_COVER_SECTION_HEADER = "## [표지]"
+_TOC_SECTION_HEADER = "## [목차]"
+
+
 def assemble_page(
     page: PageContent,
     avg_font_size: float,
@@ -95,7 +99,15 @@ def assemble_page(
 
     Interleaves text blocks and tables in y-coordinate order (reading order).
     Filters out text blocks that fall within table bounding boxes.
+
+    COVER/TOC pages get a dedicated section header and emit raw block
+    text without heading-hierarchy processing.
     """
+    if page.page_type == PageType.COVER:
+        return _assemble_marker_page(page, _COVER_SECTION_HEADER)
+    if page.page_type == PageType.TOC:
+        return _assemble_marker_page(page, _TOC_SECTION_HEADER)
+
     # Build sortable elements: (y_position, type, element)
     elements: list[tuple[float, str, TextBlock | Table]] = []
 
@@ -105,6 +117,9 @@ def assemble_page(
     for table in page.tables:
         elements.append((table.bbox.y0, "table", table))
 
+    for image in page.images:
+        elements.append((image.bbox.y0, "image", image))
+
     elements.sort(key=lambda x: x[0])
 
     # Collect table regions for overlap filtering
@@ -112,7 +127,19 @@ def assemble_page(
 
     parts: list[str] = []
 
+    image_dir = config.image_output_dir
+
     for _, elem_type, elem in elements:
+        if elem_type == "image":
+            from docforge.domain.models import ParsedImage as _PI
+
+            assert isinstance(elem, _PI)
+            md_img = _image_to_markdown(elem, image_dir)
+            if md_img:
+                parts.append("")
+                parts.append(md_img)
+                parts.append("")
+            continue
         if elem_type == "table":
             assert isinstance(elem, Table)
             md_table = table_to_markdown(elem)
@@ -145,6 +172,40 @@ def assemble_page(
                 parts.append(text)
 
     return "\n".join(parts)
+
+
+def _image_to_markdown(image, image_dir: str | None) -> str:
+    """Render a ``ParsedImage`` as ``![caption](path)`` markdown.
+
+    When ``image_dir`` is set, builds a deterministic relative path
+    ``<image_dir>/page-N-img-<block_id>.<ext>``. Otherwise falls back to
+    a plain caption-only italic line.
+    """
+    caption = (image.caption or image.alt_text or "").strip()
+    alt_text = caption or f"image-{image.page_num}-{image.block_id}"
+    if image_dir:
+        ext = "jpg" if image.format == "jpeg" else image.format
+        path = f"{image_dir.rstrip('/')}/page-{image.page_num}-img-{image.block_id}.{ext}"
+        return f"![{alt_text}]({path})"
+    if caption:
+        return f"_{caption}_"
+    return ""
+
+
+def _assemble_marker_page(page: PageContent, header: str) -> str:
+    """Render a COVER/TOC page as ``header`` followed by its raw lines."""
+    sorted_blocks = sorted(page.blocks, key=lambda b: (b.bbox.y0, b.bbox.x0))
+    lines: list[str] = [header, ""]
+    for block in sorted_blocks:
+        text = block.text.strip()
+        if text:
+            lines.append(text)
+    if len(lines) == 2:
+        # No usable blocks — fall back to raw_text if available
+        raw = page.raw_text.strip()
+        if raw:
+            lines.append(raw)
+    return "\n".join(lines)
 
 
 def finalize_markdown(

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Protocol
 
 from docforge.domain.enums import BlockType
-from docforge.domain.models import Table, TextBlock
+from docforge.domain.models import LayoutBlock, Table, TextBlock
 from docforge.domain.value_objects import (
     ImageQualityReport,
     PreprocessingDecision,
@@ -164,6 +164,26 @@ class FormatParser(Protocol):
 
     def supported_extensions(self) -> tuple[str, ...]:
         """Return tuple of supported file extensions (e.g., '.pdf', '.html')."""
+        ...
+
+
+class LayoutDetector(Protocol):
+    """Port for page layout detection (Surya, LayoutLMv3, etc.).
+
+    Adapters live in ``docforge.adapters.layout``. The domain depends only
+    on this Protocol — no adapter library may be imported from
+    ``domain/`` or ``processing/``.
+    """
+
+    def detect(self, image: RawImage | object, page_num: int) -> list[LayoutBlock]:
+        """Detect layout regions on a rendered page image.
+
+        Returns an empty list when the backend is unavailable or fails.
+        """
+        ...
+
+    def is_available(self) -> bool:
+        """Return True if the backend is installed and ready to run."""
         ...
 
 

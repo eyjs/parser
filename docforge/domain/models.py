@@ -64,6 +64,40 @@ class PageConfidence:
 
 
 @dataclass(frozen=True)
+class LayoutBlock:
+    """Layout-detector output describing one region on a page.
+
+    Produced by the ``LayoutDetector`` port (e.g. Surya). The label
+    vocabulary is intentionally the small Surya/Docling-aligned set:
+    ``Text | Title | Table | Figure | Caption | Formula``. Adapters MUST
+    normalize their native labels into this set.
+    """
+
+    bbox: BBox
+    label: str
+    confidence: float
+    page_num: int
+
+
+@dataclass(frozen=True)
+class ParsedImage:
+    """An image extracted from a PDF page with optional caption metadata.
+
+    ``data`` holds the raw image bytes (PNG/JPEG); persistence to disk
+    is the caller's responsibility. ``block_id`` is a short uuid4 hex
+    used to build deterministic filenames.
+    """
+
+    bbox: BBox
+    data: bytes
+    format: str  # "png" | "jpeg"
+    caption: str | None
+    page_num: int
+    block_id: str
+    alt_text: str | None = None
+
+
+@dataclass(frozen=True)
 class PageContent:
     """Parsed content of a single PDF page."""
 
@@ -75,6 +109,7 @@ class PageContent:
     width: float = 0.0
     height: float = 0.0
     confidence: PageConfidence | None = None
+    images: tuple[ParsedImage, ...] = ()
 
 
 @dataclass(frozen=True)

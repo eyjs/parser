@@ -91,6 +91,7 @@ def parse_pdf(
     reader.close(doc)
 
     llm_engine = _h.build_llm_engine(config)
+    layout_detector = _h.build_layout_detector(config)
 
     _log(f"[4/6] Processing {total_pages} pages...")
     page_processor = PageProcessor(
@@ -103,6 +104,7 @@ def parse_pdf(
         avg_line_gap=avg_line_gap,
         patterns=patterns,
         use_ocr=use_ocr,
+        layout_detector=layout_detector,
     )
     coordinator = PipelineCoordinator(
         page_processor=page_processor,

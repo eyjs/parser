@@ -1,10 +1,18 @@
-"""Per-page type classification: DIGITAL / SCANNED / MIXED / NOISE."""
+"""Per-page type classification: DIGITAL / SCANNED / MIXED / NOISE / COVER / TOC.
+
+Phase B-3 split COVER and TOC out of the legacy NOISE bucket. The legacy
+``classify_page`` entry point keeps its signature (no blocks argument) so
+all existing tests/callers stay green; a new ``classify_page_with_blocks``
+adds the cover/TOC heuristics that need the per-block layout/font info.
+"""
 
 from __future__ import annotations
 
 import re
+from typing import Iterable
 
 from docforge.domain.enums import PageType
+from docforge.domain.models import TextBlock
 from docforge.infrastructure.config import ParserConfig
 
 
@@ -16,6 +24,21 @@ _TOC_SPACE_PATTERN = re.compile(r"^.{2,50}\s+\d{1,4}\s*$")
 
 _TOC_PATTERNS = [_TOC_DOT_PATTERN, _TOC_ELLIPSIS_PATTERN, _TOC_LINE_PATTERN, _TOC_SPACE_PATTERN]
 
+# TOC keyword markers (Korean/English)
+_TOC_KEYWORDS = ("목 차", "목차", "차 례", "차례", "Contents", "CONTENTS")
+
+# Cover heuristic thresholds
+_COVER_MAX_PAGE_IDX = 2          # 0-based: pages 1..3
+_COVER_MAX_BLOCKS = 10
+_COVER_MIN_AVG_FONT = 14.0
+_COVER_MIN_CENTER_RATIO = 0.5
+
+# TOC heuristic thresholds
+_TOC_MIN_SHORT_RATIO = 0.6
+_TOC_MIN_BLOCKS = 5
+_TOC_SHORT_LEN = 30
+_TOC_RIGHT_NUM_RE = re.compile(r"\d{1,4}\s*$")
+
 
 def classify_page(
     char_count: int,
@@ -24,23 +47,17 @@ def classify_page(
     raw_text: str,
     config: ParserConfig,
 ) -> PageType:
-    """Classify a single page into a PageType.
+    """Classify a single page into a PageType (legacy signature).
 
-    Args:
-        char_count: Number of characters extracted from the page.
-        has_images: Whether the page contains embedded images.
-        image_area_ratio: Ratio of image area to page area.
-        raw_text: Raw text extracted from the page.
-        config: Parser configuration.
-
-    Returns:
-        The classified PageType.
+    Kept for backward compatibility — does not detect COVER/TOC because
+    those heuristics require block-level info. Callers wanting the
+    expanded classification should use :func:`classify_page_with_blocks`.
     """
     # Empty page
     if char_count < 5 and not has_images:
         return PageType.NOISE
 
-    # TOC page detection
+    # TOC page detection (legacy: leader-dot heuristic only)
     if _is_toc_page(raw_text, config.toc_threshold):
         return PageType.NOISE
 
@@ -66,6 +83,100 @@ def classify_page(
 
     # Fallback: too little text, no images
     return PageType.NOISE
+
+
+def classify_page_with_blocks(
+    page_idx: int,
+    char_count: int,
+    has_images: bool,
+    image_area_ratio: float,
+    raw_text: str,
+    blocks: Iterable[TextBlock],
+    page_width: float,
+    page_height: float,
+    config: ParserConfig,
+) -> PageType:
+    """Classify with cover/TOC awareness.
+
+    Decision order:
+      1. COVER (page_idx <= 2 + few large-font blocks)
+      2. TOC (keywords or short-row + right-aligned numbers)
+      3. Fall back to legacy NOISE/SCANNED/MIXED/DIGITAL pipeline.
+    """
+    blocks_list = list(blocks)
+
+    if is_cover_page(page_idx, blocks_list, page_width, page_height):
+        return PageType.COVER
+
+    if is_toc_page(blocks_list, raw_text):
+        return PageType.TOC
+
+    return classify_page(
+        char_count=char_count,
+        has_images=has_images,
+        image_area_ratio=image_area_ratio,
+        raw_text=raw_text,
+        config=config,
+    )
+
+
+def is_cover_page(
+    page_idx: int,
+    blocks: list[TextBlock],
+    page_width: float,
+    page_height: float,
+) -> bool:
+    """Return True when the page looks like a document cover.
+
+    Heuristic — must satisfy ALL:
+      * page_idx in [0, 1, 2] (1-based pages 1..3)
+      * len(blocks) <= 10
+      * average font size >= 14pt
+      * >= 50% of blocks are roughly center-aligned horizontally
+    """
+    if page_idx > _COVER_MAX_PAGE_IDX:
+        return False
+    if not blocks or len(blocks) > _COVER_MAX_BLOCKS:
+        return False
+
+    avg_font = sum(b.font.size for b in blocks) / len(blocks)
+    if avg_font < _COVER_MIN_AVG_FONT:
+        return False
+
+    if page_width <= 0:
+        return False
+
+    page_center = page_width / 2.0
+    # Use 25% of page width as the "centered" tolerance window
+    tolerance = page_width * 0.25
+    centered = sum(
+        1 for b in blocks if abs(b.bbox.center_x - page_center) <= tolerance
+    )
+    return centered / len(blocks) >= _COVER_MIN_CENTER_RATIO
+
+
+def is_toc_page(blocks: list[TextBlock], raw_text: str) -> bool:
+    """Return True when the page looks like a table of contents.
+
+    Triggers if any keyword marker is present OR the structural
+    short-row + right-aligned-number heuristic fires.
+    """
+    if any(keyword in raw_text for keyword in _TOC_KEYWORDS):
+        return True
+
+    if not blocks or len(blocks) < _TOC_MIN_BLOCKS:
+        return False
+
+    short_rows = sum(
+        1 for b in blocks if len(b.text.strip()) < _TOC_SHORT_LEN
+    )
+    if short_rows / len(blocks) < _TOC_MIN_SHORT_RATIO:
+        return False
+
+    right_numbered = sum(
+        1 for b in blocks if _TOC_RIGHT_NUM_RE.search(b.text.strip())
+    )
+    return right_numbered / len(blocks) >= 0.4
 
 
 def _is_garbled_text(raw_text: str) -> bool:

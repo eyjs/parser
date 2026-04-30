@@ -155,3 +155,11 @@ class ParserConfig:
     # Domain profile selector for text structure recognition.
     # "korean_legal" (default) | "english_academic"
     domain_profile: str = "korean_legal"
+
+    # Phase B-1: Layout detection (Surya). Off by default — opt-in.
+    layout_detection_enabled: bool = False
+    layout_iou_threshold: float = 0.3
+
+    # Phase B-2: Image extraction + caption matching. Off by default.
+    image_extraction_enabled: bool = False
+    image_output_dir: str | None = None
