@@ -51,36 +51,56 @@
 
         <!-- Processing pipeline -->
         <div class="arch-layer">
-          <div class="arch-label">파싱 파이프라인</div>
+          <div class="arch-label">파싱 파이프라인 (Phase B)</div>
           <div class="arch-pipeline">
             <div class="arch-pipe-step">
-              <strong>1. 텍스트 추출</strong>
-              <span>PyMuPDF</span>
+              <strong>1. 페이지 분류</strong>
+              <span>DIGITAL/SCANNED/MIXED<br>COVER/TOC 자동 분리</span>
             </div>
             <div class="arch-pipe-arrow">→</div>
             <div class="arch-pipe-step">
-              <strong>2. 테이블 추출</strong>
-              <span>pdfplumber</span>
+              <strong>2. 텍스트/OCR</strong>
+              <span>PyMuPDF · EasyOCR<br>품질 게이트(A/B)</span>
             </div>
             <div class="arch-pipe-arrow">→</div>
             <div class="arch-pipe-step">
-              <strong>3. 노이즈 제거</strong>
-              <span>헤더/푸터/워터마크</span>
+              <strong>3. 노이즈 + 컬럼</strong>
+              <span>헤더/푸터/리더닷<br>멀티컬럼 재정렬</span>
             </div>
             <div class="arch-pipe-arrow">→</div>
             <div class="arch-pipe-step">
-              <strong>4. 줄 병합</strong>
-              <span>한글 줄바꿈 처리</span>
+              <strong>4. 형태소 분할</strong>
+              <span>Kiwi (JX/JKB/EC/EF)<br>한국어 문장 경계</span>
             </div>
             <div class="arch-pipe-arrow">→</div>
             <div class="arch-pipe-step">
               <strong>5. 구조 분류</strong>
-              <span>제/조/항/호/목</span>
+              <span>DomainProfile<br>제/조/항 또는 영문</span>
             </div>
             <div class="arch-pipe-arrow">→</div>
             <div class="arch-pipe-step">
-              <strong>6. MD 조립</strong>
-              <span>후처리 + 정리</span>
+              <strong>6. Layout 보정</strong>
+              <span>Surya (opt-in)<br>Title/Caption 오버라이드</span>
+            </div>
+            <div class="arch-pipe-arrow">→</div>
+            <div class="arch-pipe-step">
+              <strong>7. 테이블</strong>
+              <span>pdfplumber → PaddleOCR<br>→ Region VLM (3-tier)</span>
+            </div>
+            <div class="arch-pipe-arrow">→</div>
+            <div class="arch-pipe-step">
+              <strong>8. 이미지 슬롯</strong>
+              <span>위치+ID 항상 보존<br>VLM placeholder</span>
+            </div>
+            <div class="arch-pipe-arrow">→</div>
+            <div class="arch-pipe-step">
+              <strong>9. Heading 계층</strong>
+              <span>parent_id 트리<br>deterministic block_id</span>
+            </div>
+            <div class="arch-pipe-arrow">→</div>
+            <div class="arch-pipe-step">
+              <strong>10. MD/Chunk</strong>
+              <span>by_title/page/semantic<br>JSON Lines (RAG)</span>
             </div>
           </div>
         </div>
@@ -119,23 +139,31 @@
 
       <!-- Module detail -->
       <div class="arch-detail">
-        <h3>모듈 구조</h3>
+        <h3>모듈 구조 (클린 아키텍처 4레이어)</h3>
         <div class="arch-modules">
           <div class="arch-module">
-            <div class="arch-module__header">adapters/</div>
-            <div class="arch-module__body">pymupdf_reader · pdfplumber_tables · ocr_reader</div>
+            <div class="arch-module__header">domain/</div>
+            <div class="arch-module__body">models · ports (Protocol) · enums · value_objects<br>TextBlock · Table · LayoutBlock · ParsedImage · PageError</div>
           </div>
           <div class="arch-module">
             <div class="arch-module__header">processing/</div>
-            <div class="arch-module__body">noise_detector · line_merger · text_structurer · table_merger · markdown_assembler</div>
+            <div class="arch-module__body">block_splitter · line_merger · text_structurer · noise_detector<br>heading_hierarchy · layout_router · image_extractor · caption_matcher<br>page_classifier · markdown_assembler · table_quality_scorer<br>region_vlm_router · domain_profiles/ (KoreanLegal, EnglishAcademic)</div>
+          </div>
+          <div class="arch-module">
+            <div class="arch-module__header">adapters/</div>
+            <div class="arch-module__body">pymupdf_reader · pdfplumber_tables · paddle_table<br>easyocr_engine · apple_vision_engine · paddle_ocr<br>morpheme_analyzer (Kiwi) · vision_llm_engine (Qwen2-VL)<br>layout/surya_adapter · region_crop · opencv_preprocessor</div>
           </div>
           <div class="arch-module">
             <div class="arch-module__header">usecases/</div>
-            <div class="arch-module__body">parse_pdf (오케스트레이터)</div>
+            <div class="arch-module__body">parse_pdf (orchestrator) · page_processor · pipeline_coordinator<br>profile_document · ocr_factory<br>chunking/ (by_title · by_page · semantic · fixed) · serializer</div>
+          </div>
+          <div class="arch-module">
+            <div class="arch-module__header">infrastructure/</div>
+            <div class="arch-module__body">config (ParserConfig · TableConfig · ScorerWeights · OCR/Layout 옵션)</div>
           </div>
           <div class="arch-module">
             <div class="arch-module__header">web/</div>
-            <div class="arch-module__body">routes · worker · sse · storage · app</div>
+            <div class="arch-module__body">routes · worker (ThreadPool) · sse (실시간 스트림)<br>storage · app · templates (dashboard · editor · verify)</div>
           </div>
         </div>
       </div>
@@ -186,6 +214,36 @@
 
     <!-- Alerts -->
     <div id="alertArea" aria-live="assertive"></div>
+  </div>
+</section>
+
+<!-- Live preview (page-by-page) -->
+<section id="livePreviewSection" class="card mb-6 hidden" aria-labelledby="live-preview-heading">
+  <div class="card__header" id="live-preview-heading">
+    <span>실시간 파싱 현황</span>
+    <span id="livePreviewCounter" class="badge badge--running" style="margin-left: auto;">0 / 0</span>
+  </div>
+  <div class="card__body live-preview">
+    <!-- Page indicator grid: one cell per page, fills as pages complete -->
+    <div class="live-preview__grid" id="livePreviewGrid" aria-label="페이지별 처리 상태"></div>
+
+    <!-- Stage timeline: shows current pipeline stage -->
+    <div class="live-preview__stages" id="livePreviewStages">
+      <div class="stage-pill stage-pill--idle" data-stage="profiling">프로파일링</div>
+      <div class="stage-pill stage-pill--idle" data-stage="noise_learning">노이즈 학습</div>
+      <div class="stage-pill stage-pill--idle" data-stage="page_progress">페이지 처리</div>
+      <div class="stage-pill stage-pill--idle" data-stage="table_merging">테이블 병합</div>
+      <div class="stage-pill stage-pill--idle" data-stage="assembling">MD 조립</div>
+    </div>
+
+    <!-- Page content tail: latest 5 pages of markdown -->
+    <div class="live-preview__tail-header">
+      <span>최근 처리된 페이지</span>
+      <button type="button" id="livePreviewToggle" class="btn btn--secondary btn--sm">접기</button>
+    </div>
+    <div class="live-preview__tail" id="livePreviewTail" aria-live="polite">
+      <p class="text-muted text-sm" style="padding: 1rem; text-align: center;">처리가 시작되면 여기에 페이지별 마크다운이 표시됩니다.</p>
+    </div>
   </div>
 </section>
 

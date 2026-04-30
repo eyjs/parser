@@ -27,6 +27,140 @@ var uploadCards = document.getElementById('uploadCards');
 var _activeUploads = {};  // task_id -> { filename, status, es }
 var _queuePollTimer = null;
 
+// Live preview state (most recently active task drives the preview panel)
+var _livePreview = {
+  taskId: null,
+  totalPages: 0,
+  pages: {},        // page_num -> markdown
+  recentOrder: [],  // page_nums in arrival order
+  maxRecent: 5,
+};
+var livePreviewSection = document.getElementById('livePreviewSection');
+var livePreviewGrid = document.getElementById('livePreviewGrid');
+var livePreviewStages = document.getElementById('livePreviewStages');
+var livePreviewTail = document.getElementById('livePreviewTail');
+var livePreviewCounter = document.getElementById('livePreviewCounter');
+var livePreviewToggle = document.getElementById('livePreviewToggle');
+var _tailCollapsed = false;
+
+if (livePreviewToggle) {
+  livePreviewToggle.addEventListener('click', function () {
+    _tailCollapsed = !_tailCollapsed;
+    livePreviewTail.classList.toggle('hidden', _tailCollapsed);
+    livePreviewToggle.textContent = _tailCollapsed ? '펼치기' : '접기';
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function ensureLivePreview(taskId) {
+  if (_livePreview.taskId === taskId) return;
+  _livePreview = {
+    taskId: taskId,
+    totalPages: 0,
+    pages: {},
+    recentOrder: [],
+    maxRecent: 5,
+  };
+  livePreviewGrid.innerHTML = '';
+  livePreviewTail.innerHTML = '<p class="text-muted text-sm" style="padding: 1rem; text-align: center;">처리가 시작되면 여기에 페이지별 마크다운이 표시됩니다.</p>';
+  livePreviewCounter.textContent = '0 / 0';
+  livePreviewSection.classList.remove('hidden');
+  // Reset stage pills to idle
+  Array.prototype.forEach.call(livePreviewStages.querySelectorAll('.stage-pill'), function (el) {
+    el.className = 'stage-pill stage-pill--idle';
+    el.dataset.stage = el.dataset.stage;
+  });
+}
+
+function updateStagePill(eventName) {
+  // Mark prior stages done, current as active
+  var order = ['profiling', 'noise_learning', 'page_progress', 'table_merging', 'assembling'];
+  var currentIdx = order.indexOf(eventName);
+  if (currentIdx === -1) return;
+  Array.prototype.forEach.call(livePreviewStages.querySelectorAll('.stage-pill'), function (el) {
+    var stage = el.dataset.stage;
+    var idx = order.indexOf(stage);
+    if (idx < currentIdx) {
+      el.className = 'stage-pill stage-pill--done';
+    } else if (idx === currentIdx) {
+      el.className = 'stage-pill stage-pill--active';
+    } else {
+      el.className = 'stage-pill stage-pill--idle';
+    }
+  });
+}
+
+function ensurePageGrid(total) {
+  if (_livePreview.totalPages === total) return;
+  _livePreview.totalPages = total;
+  livePreviewGrid.innerHTML = '';
+  for (var i = 1; i <= total; i++) {
+    var cell = document.createElement('div');
+    cell.className = 'page-cell page-cell--pending';
+    cell.dataset.page = String(i);
+    cell.title = i + '페이지 (대기)';
+    cell.textContent = i;
+    livePreviewGrid.appendChild(cell);
+  }
+}
+
+function markPageActive(page, total) {
+  ensurePageGrid(total);
+  var cell = livePreviewGrid.querySelector('[data-page="' + page + '"]');
+  if (cell && !cell.classList.contains('page-cell--done')) {
+    cell.className = 'page-cell page-cell--active';
+    cell.title = page + '페이지 (처리 중)';
+  }
+  livePreviewCounter.textContent = page + ' / ' + total;
+}
+
+function markPageDone(page, total, markdown) {
+  ensurePageGrid(total);
+  var cell = livePreviewGrid.querySelector('[data-page="' + page + '"]');
+  if (cell) {
+    cell.className = 'page-cell page-cell--done';
+    cell.title = page + '페이지 (완료, ' + (markdown || '').length + '자)';
+  }
+  _livePreview.pages[page] = markdown || '';
+  // Track recent order — newest first
+  var idx = _livePreview.recentOrder.indexOf(page);
+  if (idx !== -1) _livePreview.recentOrder.splice(idx, 1);
+  _livePreview.recentOrder.unshift(page);
+  if (_livePreview.recentOrder.length > _livePreview.maxRecent) {
+    _livePreview.recentOrder.length = _livePreview.maxRecent;
+  }
+  renderTail();
+}
+
+function renderTail() {
+  if (_livePreview.recentOrder.length === 0) {
+    livePreviewTail.innerHTML = '<p class="text-muted text-sm" style="padding: 1rem; text-align: center;">처리된 페이지가 없습니다.</p>';
+    return;
+  }
+  var html = '';
+  _livePreview.recentOrder.forEach(function (page) {
+    var md = _livePreview.pages[page] || '';
+    var preview = md.length > 600 ? md.slice(0, 600) + '\n\n…(생략)' : md;
+    html += '<details class="tail-page" open>'
+      + '<summary>페이지 ' + page + ' <span class="text-muted text-sm">(' + md.length + '자)</span></summary>'
+      + '<pre class="tail-page__body">' + escapeHtml(preview) + '</pre>'
+      + '</details>';
+  });
+  livePreviewTail.innerHTML = html;
+}
+
+function finalizeLivePreview() {
+  Array.prototype.forEach.call(livePreviewStages.querySelectorAll('.stage-pill'), function (el) {
+    el.className = 'stage-pill stage-pill--done';
+  });
+  livePreviewCounter.textContent = '✓ ' + _livePreview.totalPages + ' / ' + _livePreview.totalPages;
+}
+
 // ---------------------------------------------------------------------------
 // Drop zone interaction
 // ---------------------------------------------------------------------------
@@ -168,6 +302,7 @@ function uploadSingleFile(file) {
  */
 function subscribeToProgressMulti(taskId, cardId) {
   var es = new EventSource('/api/parse/' + taskId + '/status');
+  ensureLivePreview(taskId);
 
   es.addEventListener('message', function (e) {
     var payload;
@@ -181,8 +316,20 @@ function subscribeToProgressMulti(taskId, cardId) {
     var pct = typeof data.pct === 'number' ? data.pct : null;
     var msg = data.message || '';
 
+    // Live preview hooks
+    if (event === 'page_progress' && typeof data.page === 'number') {
+      markPageActive(data.page, data.total || _livePreview.totalPages);
+      updateStagePill('page_progress');
+    } else if (event === 'page_result' && typeof data.page === 'number') {
+      markPageDone(data.page, data.total || _livePreview.totalPages, data.markdown || '');
+    } else if (event === 'profiling' || event === 'noise_learning'
+            || event === 'table_merging' || event === 'assembling') {
+      updateStagePill(event);
+    }
+
     if (event === 'done') {
       es.close();
+      finalizeLivePreview();
       updateUploadCard(cardId, 'done', '완료', taskId);
       delete _activeUploads[taskId];
       loadHistory();
@@ -288,6 +435,7 @@ function statusToLabel(status) {
  */
 function subscribeToProgress(taskId) {
   var es = new EventSource('/api/parse/' + taskId + '/status');
+  ensureLivePreview(taskId);
 
   es.addEventListener('message', function (e) {
     var payload;
@@ -301,11 +449,23 @@ function subscribeToProgress(taskId) {
     var pct = typeof data.pct === 'number' ? data.pct : null;
     var msg = data.message || '';
 
+    // Live preview hooks (mirrors multi-file path)
+    if (event === 'page_progress' && typeof data.page === 'number') {
+      markPageActive(data.page, data.total || _livePreview.totalPages);
+      updateStagePill('page_progress');
+    } else if (event === 'page_result' && typeof data.page === 'number') {
+      markPageDone(data.page, data.total || _livePreview.totalPages, data.markdown || '');
+    } else if (event === 'profiling' || event === 'noise_learning'
+            || event === 'table_merging' || event === 'assembling') {
+      updateStagePill(event);
+    }
+
     if (pct !== null) setProgress(pct, msg);
     else if (msg) updateStatus(msg);
 
     if (event === 'done') {
       es.close();
+      finalizeLivePreview();
       setProgress(100, '변환 완료! 잠시 후 결과 페이지로 이동합니다...');
       setTimeout(function () {
         window.location.href = '/verify/' + taskId;
