@@ -23,7 +23,7 @@ CAPTION_PATTERN = re.compile(
     r"[\[<]?(그림|표|Fig|Figure|Table)\s*\d+[>\]]?",
     re.IGNORECASE,
 )
-PROXIMITY_PT: float = 100.0
+PROXIMITY_PT: float = 100.0  # default; overridable via match_captions(proximity_pt=...)
 _PATTERN_BONUS = 10.0
 _LAYOUT_LABEL_BONUS = 20.0
 _MIN_SCORE_TO_ATTACH = 1.0
@@ -33,6 +33,7 @@ def match_captions(
     images: list[ParsedImage],
     text_blocks: list[TextBlock],
     layout_label_map: dict[str, str] | None = None,
+    proximity_pt: float = PROXIMITY_PT,
 ) -> list[ParsedImage]:
     """Return new ``ParsedImage`` list with ``caption`` populated.
 
@@ -40,8 +41,10 @@ def match_captions(
         images: Images extracted for the current page.
         text_blocks: Same-page text blocks.
         layout_label_map: Optional ``block_id -> layout_label`` map from
-            :func:`docforge.processing.layout_router.build_layout_label_map`.
+            :func:`docforge.processing.layout_router.merge_and_label`.
             Boosts blocks whose layout label is ``"Caption"``.
+        proximity_pt: Vertical pt window — blocks farther than this are
+            ignored. Domain-tunable (legal=tight, academic=loose).
     """
     if not images:
         return []
@@ -49,7 +52,7 @@ def match_captions(
 
     out: list[ParsedImage] = []
     for image in images:
-        candidates = _score_candidates(image, text_blocks, label_map)
+        candidates = _score_candidates(image, text_blocks, label_map, proximity_pt)
         if not candidates:
             out.append(image)
             continue
@@ -68,13 +71,14 @@ def _score_candidates(
     image: ParsedImage,
     blocks: list[TextBlock],
     label_map: dict[str, str],
+    proximity_pt: float,
 ) -> list[tuple[TextBlock, float]]:
     out: list[tuple[TextBlock, float]] = []
     for block in blocks:
         gap = _vertical_gap(image, block)
-        if gap > PROXIMITY_PT:
+        if gap > proximity_pt:
             continue
-        score = (PROXIMITY_PT - gap) / PROXIMITY_PT
+        score = (proximity_pt - gap) / proximity_pt
         if CAPTION_PATTERN.search(block.text):
             score += _PATTERN_BONUS
         if block.block_id and label_map.get(block.block_id) == "Caption":

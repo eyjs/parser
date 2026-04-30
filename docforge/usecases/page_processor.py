@@ -195,7 +195,14 @@ class PageProcessor:
             page_ocr_used = False
 
             if page_type in (PageType.DIGITAL, PageType.MIXED):
-                blocks = preliminary_blocks or reader.extract_text_blocks(doc, page_idx)
+                # Reuse preliminary_blocks when we already extracted them
+                # (char_count >= 5). Falsy-check would re-extract for valid
+                # but empty pages — explicit None sentinel avoids that.
+                blocks = (
+                    preliminary_blocks
+                    if preliminary_blocks or char_count >= 5
+                    else reader.extract_text_blocks(doc, page_idx)
+                )
 
             if page_type == PageType.SCANNED and self._use_ocr:
                 with ocr_semaphore:
@@ -243,12 +250,15 @@ class PageProcessor:
             merged_blocks = self._classify_and_merge(clean_blocks, page_type)
             merged_blocks = assign_hierarchy(merged_blocks, page_num=page_idx + 1)
 
-            # Phase B-1: layout-detector boost (opt-in via config flag)
+            # Phase B-1: layout-detector boost (opt-in via config flag).
+            # Single-pass merge_and_label avoids re-scanning the N×M IoU
+            # grid when caption_matcher later needs the label map.
             layout_blocks = self._maybe_detect_layout(reader, doc, page_idx)
+            layout_label_map: dict[str, str] = {}
             if layout_blocks:
-                from docforge.processing.layout_router import merge_layout_with_text
+                from docforge.processing.layout_router import merge_and_label
 
-                merged_blocks = merge_layout_with_text(
+                merged_blocks, layout_label_map = merge_and_label(
                     merged_blocks,
                     layout_blocks,
                     iou_threshold=config.layout_iou_threshold,
@@ -280,9 +290,12 @@ class PageProcessor:
                 merged_blocks, page_type, width, height, page_gate_result,
             )
 
-            # Phase B-2: image extraction + caption matching (opt-in)
+            # Phase B-2: image region detection + caption matching.
+            # Reuses the layout label map computed above instead of
+            # re-scanning the IoU grid inside the matcher.
             page_images = self._maybe_extract_images(
                 reader, doc, page_idx, merged_blocks, layout_blocks,
+                layout_label_map=layout_label_map,
             )
 
             page_content = PageContent(
@@ -388,23 +401,41 @@ class PageProcessor:
         page_idx: int,
         text_blocks: list[TextBlock],
         layout_blocks,
+        layout_label_map: dict[str, str] | None = None,
     ):
-        """Extract images and attach captions when extraction is enabled."""
+        """Detect image regions; extract bytes only if extraction is on.
+
+        When ``image_placeholders_enabled`` (default True), every image
+        region is recorded with bbox + deterministic id + empty bytes so
+        markdown placeholders can preserve the spatial slot for future
+        VLM caption injection. ``image_extraction_enabled`` adds the
+        bytes-decoding step on top of that.
+        """
         config = self._config
-        if not config.image_extraction_enabled:
+        if not (config.image_placeholders_enabled or config.image_extraction_enabled):
             return []
         try:
             from docforge.processing.caption_matcher import match_captions
             from docforge.processing.image_extractor import extract_images
-            from docforge.processing.layout_router import build_layout_label_map
 
-            images = extract_images(reader, doc, page_idx)
+            images = extract_images(
+                reader, doc, page_idx,
+                include_bytes=config.image_extraction_enabled,
+            )
             if not images:
                 return []
-            label_map = build_layout_label_map(
-                text_blocks, layout_blocks or [], iou_threshold=config.layout_iou_threshold,
+            if layout_label_map is None:
+                # Fall back: compute label map only if caller didn't pass one.
+                from docforge.processing.layout_router import build_layout_label_map
+                layout_label_map = build_layout_label_map(
+                    text_blocks, layout_blocks or [],
+                    iou_threshold=config.layout_iou_threshold,
+                )
+            return match_captions(
+                images, text_blocks,
+                layout_label_map=layout_label_map,
+                proximity_pt=config.caption_proximity_pt,
             )
-            return match_captions(images, text_blocks, layout_label_map=label_map)
         except Exception:  # pragma: no cover - defensive
             return []
 
@@ -560,24 +591,12 @@ def _find_best_overlap(target: Table, candidates: list[Table]) -> Table | None:
     best_iou = 0.0
 
     for candidate in candidates:
-        iou = _bbox_iou(target.bbox, candidate.bbox)
+        iou = target.bbox.iou(candidate.bbox)
         if iou > best_iou:
             best_iou = iou
             best = candidate
 
     return best if best_iou > 0.2 else None
-
-
-def _bbox_iou(a, b) -> float:
-    inter_x0 = max(a.x0, b.x0)
-    inter_y0 = max(a.y0, b.y0)
-    inter_x1 = min(a.x1, b.x1)
-    inter_y1 = min(a.y1, b.y1)
-
-    inter_area = max(0, inter_x1 - inter_x0) * max(0, inter_y1 - inter_y0)
-    union_area = a.area + b.area - inter_area
-
-    return inter_area / union_area if union_area > 0 else 0.0
 
 
 def _blocks_overlap(block_a: TextBlock, block_b: TextBlock) -> bool:

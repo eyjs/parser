@@ -62,7 +62,29 @@ class TestExtractImages:
         assert img.bbox.x0 == 10 and img.bbox.y1 == 220
         assert img.page_num == 1
         assert img.caption is None
-        assert len(img.block_id) == 8
+        # Phase B-2 hardened: deterministic md5-truncated id (12 chars).
+        assert len(img.block_id) == 12
+
+    def test_block_id_is_deterministic(self) -> None:
+        """Same xref+page+bbox => same block_id across runs."""
+        page = _FakePage(
+            images=[(101,)], bbox_map={101: _Rect(0, 0, 10, 10)},
+        )
+        doc1 = _FakeDoc(page, {101: {"image": b"\x89PNG", "ext": "png"}})
+        doc2 = _FakeDoc(page, {101: {"image": b"\x89PNG", "ext": "png"}})
+        out1 = extract_images(reader=None, doc=doc1, page_idx=0)
+        out2 = extract_images(reader=None, doc=doc2, page_idx=0)
+        assert out1[0].block_id == out2[0].block_id
+
+    def test_placeholder_only_mode(self) -> None:
+        """include_bytes=False keeps location + id but omits data."""
+        page = _FakePage(images=[(1,)], bbox_map={1: _Rect(5, 5, 50, 50)})
+        doc = _FakeDoc(page, {1: {"image": b"\x89PNG", "ext": "png"}})
+        out = extract_images(reader=None, doc=doc, page_idx=0, include_bytes=False)
+        assert len(out) == 1
+        assert out[0].data == b""
+        assert out[0].bbox.x0 == 5
+        assert len(out[0].block_id) == 12
 
     def test_jpeg_extension_normalized(self) -> None:
         page = _FakePage(
@@ -76,10 +98,18 @@ class TestExtractImages:
         out = extract_images(reader=None, doc=doc, page_idx=0)
         assert out[0].format == "jpeg"
 
-    def test_skips_image_when_bytes_missing(self) -> None:
+    def test_keeps_placeholder_when_bytes_missing(self) -> None:
+        """Phase B-2: empty bytes are kept as placeholder (was: skipped).
+
+        Future VLM injection needs the slot — losing the location entry
+        means the slot can never be filled in later.
+        """
         page = _FakePage(
             images=[(9,)],
             bbox_map={9: _Rect(0, 0, 10, 10)},
         )
         doc = _FakeDoc(page, {9: {"image": b"", "ext": "png"}})
-        assert extract_images(reader=None, doc=doc, page_idx=0) == []
+        out = extract_images(reader=None, doc=doc, page_idx=0)
+        assert len(out) == 1
+        assert out[0].data == b""
+        assert out[0].bbox.x0 == 0

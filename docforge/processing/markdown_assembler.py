@@ -175,21 +175,36 @@ def assemble_page(
 
 
 def _image_to_markdown(image, image_dir: str | None) -> str:
-    """Render a ``ParsedImage`` as ``![caption](path)`` markdown.
+    """Render a ``ParsedImage`` as visible image link + machine-readable
+    placeholder so VLM-generated alt-text can be back-mapped later.
 
-    When ``image_dir`` is set, builds a deterministic relative path
-    ``<image_dir>/page-N-img-<block_id>.<ext>``. Otherwise falls back to
-    a plain caption-only italic line.
+    The HTML comment carries ``id``, ``page``, and bbox — invisible in
+    rendered markdown but trivial to grep/replace once a VLM pipeline
+    fills in alt-text. Visible part keeps standard markdown image syntax
+    so downstream tooling (LangChain/LlamaIndex loaders) recognizes it.
     """
     caption = (image.caption or image.alt_text or "").strip()
     alt_text = caption or f"image-{image.page_num}-{image.block_id}"
-    if image_dir:
+
+    bbox = image.bbox
+    comment = (
+        f"<!-- IMAGE id={image.block_id} page={image.page_num} "
+        f"bbox=[{bbox.x0:.1f},{bbox.y0:.1f},{bbox.x1:.1f},{bbox.y1:.1f}] -->"
+    )
+
+    if image_dir and image.data:
         ext = "jpg" if image.format == "jpeg" else image.format
         path = f"{image_dir.rstrip('/')}/page-{image.page_num}-img-{image.block_id}.{ext}"
-        return f"![{alt_text}]({path})"
-    if caption:
-        return f"_{caption}_"
-    return ""
+        visible = f"![{alt_text}]({path})"
+    else:
+        # No bytes on disk yet — emit a placeholder URI so the markdown
+        # round-trip stays valid and post-processors can spot the slot.
+        placeholder_uri = (
+            f"placeholder://image/{image.block_id}?page={image.page_num}"
+        )
+        visible = f"![{alt_text}]({placeholder_uri})"
+
+    return f"{comment}\n{visible}"
 
 
 def _assemble_marker_page(page: PageContent, header: str) -> str:

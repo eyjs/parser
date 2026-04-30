@@ -2,8 +2,15 @@
 
 from unittest.mock import MagicMock, patch
 
+import numpy as np
+
 from docforge.adapters.easyocr_engine import EasyOCREngine
 from docforge.domain.enums import BlockType
+
+
+def _fake_image() -> np.ndarray:
+    """Lightweight stand-in image — adapter accepts ndarray directly."""
+    return np.zeros((10, 10, 3), dtype=np.uint8)
 
 
 class TestEasyOCREngine:
@@ -30,7 +37,7 @@ class TestEasyOCREngine:
         mock_reader.return_value = mock_ocr
 
         engine = EasyOCREngine()
-        blocks = engine.recognize(MagicMock())
+        blocks = engine.recognize(_fake_image())
 
         assert len(blocks) == 2
         assert blocks[0].text == "보험약관"
@@ -52,7 +59,7 @@ class TestEasyOCREngine:
         mock_reader.return_value = mock_ocr
 
         engine = EasyOCREngine()
-        blocks = engine.recognize(MagicMock())
+        blocks = engine.recognize(_fake_image())
 
         assert len(blocks) == 1
         assert blocks[0].text == "유효"
@@ -65,6 +72,6 @@ class TestEasyOCREngine:
         mock_reader.return_value = mock_ocr
 
         engine = EasyOCREngine()
-        blocks = engine.recognize(MagicMock())
+        blocks = engine.recognize(_fake_image())
 
         assert blocks == []

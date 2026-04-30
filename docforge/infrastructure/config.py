@@ -160,6 +160,17 @@ class ParserConfig:
     layout_detection_enabled: bool = False
     layout_iou_threshold: float = 0.3
 
-    # Phase B-2: Image extraction + caption matching. Off by default.
+    # Phase B-2: Image handling
+    # ``image_placeholders_enabled`` (default True): always detect image
+    #   regions and emit placeholder markers in markdown so future VLM
+    #   adoption can map alt-text back to the correct location.
+    #   Image bytes are NOT extracted — only bbox + deterministic id.
+    # ``image_extraction_enabled`` (default False): in addition to
+    #   placeholders, extract image bytes and emit ``![](path)`` markdown.
+    image_placeholders_enabled: bool = True
     image_extraction_enabled: bool = False
     image_output_dir: str | None = None
+    # Vertical pt distance window for image-caption matching.
+    # Tighter for legal docs (where layout is dense), looser for academic
+    # papers (where captions sit further from figures).
+    caption_proximity_pt: float = 100.0

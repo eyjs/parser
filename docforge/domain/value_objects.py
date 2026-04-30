@@ -49,6 +49,20 @@ class BBox:
     def contains_point(self, x: float, y: float) -> bool:
         return self.x0 <= x <= self.x1 and self.y0 <= y <= self.y1
 
+    def iou(self, other: BBox) -> float:
+        """Intersection-over-union with another bbox. Returns 0.0 on no overlap."""
+        inter_x0 = max(self.x0, other.x0)
+        inter_y0 = max(self.y0, other.y0)
+        inter_x1 = min(self.x1, other.x1)
+        inter_y1 = min(self.y1, other.y1)
+        inter_area = max(0.0, inter_x1 - inter_x0) * max(0.0, inter_y1 - inter_y0)
+        if inter_area <= 0:
+            return 0.0
+        union = self.area + other.area - inter_area
+        if union <= 0:
+            return 0.0
+        return inter_area / union
+
 
 @dataclass(frozen=True)
 class FontInfo:

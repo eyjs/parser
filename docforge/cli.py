@@ -79,6 +79,11 @@ Examples:
 
     args = parser.parse_args(argv)
 
+    # --image-dir is meaningless without --extract-images.
+    image_dir_default = parser.get_default("image_dir")
+    if args.image_dir != image_dir_default and not args.extract_images:
+        parser.error("--image-dir requires --extract-images")
+
     pdf_path = Path(args.pdf)
     if not pdf_path.exists():
         print(f"Error: PDF file not found: {pdf_path}", file=sys.stderr)
@@ -124,10 +129,24 @@ Examples:
             img_root = Path(args.image_dir)
             if not img_root.is_absolute():
                 img_root = output_path.parent / args.image_dir
+            img_root = img_root.resolve()
+            # Path-traversal guard: relative dirs must stay under the
+            # output file's parent. Absolute paths are explicit user
+            # intent and are allowed.
+            if not Path(args.image_dir).is_absolute():
+                output_parent = output_path.parent.resolve()
+                if not str(img_root).startswith(str(output_parent)):
+                    print(
+                        f"Error: --image-dir escapes output directory: {img_root}",
+                        file=sys.stderr,
+                    )
+                    return 1
             img_root.mkdir(parents=True, exist_ok=True)
             count = 0
             for page in result.pages:
                 for image in page.images:
+                    if not image.data:
+                        continue  # placeholder-only entry, no bytes to write
                     ext = "jpg" if image.format == "jpeg" else image.format
                     fname = f"page-{image.page_num}-img-{image.block_id}.{ext}"
                     (img_root / fname).write_bytes(image.data)
