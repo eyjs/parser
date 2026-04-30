@@ -105,6 +105,7 @@ def parse_pdf(
         patterns=patterns,
         use_ocr=use_ocr,
         layout_detector=layout_detector,
+        force_ocr=force_ocr,
     )
     coordinator = PipelineCoordinator(
         page_processor=page_processor,

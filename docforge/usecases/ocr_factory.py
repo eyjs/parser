@@ -12,28 +12,23 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Supported backend names in priority order
-SUPPORTED_BACKENDS = ("apple_vision", "easyocr", "paddleocr")
+SUPPORTED_BACKENDS = ("apple_vision", "paddleocr")
 
 
 def create_ocr_engine(backend: str = "auto") -> Any:
     """Create an OCR engine instance.
 
     Args:
-        backend: Backend name ('easyocr', 'apple_vision', 'paddleocr', 'auto').
+        backend: Backend name ('apple_vision', 'paddleocr', 'auto').
                  'auto' tries backends in priority order.
 
     Returns:
         An OCR engine implementing the OCREngine protocol.
-
-    Raises:
-        RuntimeError: If no OCR backend is available.
     """
     if backend == "auto":
         return _create_auto()
 
     factory_map = {
-        "easyocr": _create_easyocr,
         "apple_vision": _create_apple_vision,
         "paddleocr": _create_paddleocr,
     }
@@ -50,7 +45,6 @@ def create_ocr_engine(backend: str = "auto") -> Any:
         logger.info("OCR backend: %s", backend)
         return engine
 
-    # Fallback to auto if specified backend is unavailable
     logger.warning(
         "Requested OCR backend '%s' is unavailable, falling back to auto",
         backend,
@@ -61,20 +55,18 @@ def create_ocr_engine(backend: str = "auto") -> Any:
 def _create_auto() -> Any:
     """Try backends in platform-dependent priority order.
 
-    macOS: Apple Vision -> EasyOCR -> PaddleOCR
-    Others: EasyOCR -> PaddleOCR -> Apple Vision
+    macOS: Apple Vision -> PaddleOCR
+    Others: PaddleOCR -> Apple Vision
     """
     import platform
 
     if platform.system() == "Darwin":
         order = [
             ("apple_vision", _create_apple_vision),
-            ("easyocr", _create_easyocr),
             ("paddleocr", _create_paddleocr),
         ]
     else:
         order = [
-            ("easyocr", _create_easyocr),
             ("paddleocr", _create_paddleocr),
             ("apple_vision", _create_apple_vision),
         ]
@@ -87,15 +79,6 @@ def _create_auto() -> Any:
 
     logger.warning("No OCR backend available — OCR will be skipped for scanned pages")
     return _NullOCREngine()
-
-
-def _create_easyocr() -> Any:
-    """Create EasyOCR engine."""
-    try:
-        from docforge.adapters.easyocr_engine import EasyOCREngine
-        return EasyOCREngine()
-    except Exception:
-        return None
 
 
 def _create_paddleocr() -> Any:

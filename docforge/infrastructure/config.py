@@ -82,7 +82,7 @@ class ParserConfig:
     heading_size_ratio: float = 1.2
 
     # OCR
-    ocr_backend: str = "auto"  # "auto", "easyocr", "apple_vision", "paddleocr"
+    ocr_backend: str = "auto"  # "auto", "apple_vision", "paddleocr"
     ocr_confidence_low: float = 0.8
     ocr_confidence_fail: float = 0.5
     dpi: int = 300

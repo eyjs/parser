@@ -17,17 +17,11 @@ class TestOCRFactory:
         assert hasattr(engine, "is_available")
         assert hasattr(engine, "recognize")
 
-    def test_easyocr_returns_engine_or_falls_back(self) -> None:
-        """EasyOCR request returns engine or falls back to auto."""
-        engine = create_ocr_engine("easyocr")
-        assert engine is not None
-
     def test_unknown_backend_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown OCR backend"):
             create_ocr_engine("nonexistent")
 
     def test_supported_backends_list(self) -> None:
-        assert "easyocr" in SUPPORTED_BACKENDS
         assert "apple_vision" in SUPPORTED_BACKENDS
         assert "paddleocr" in SUPPORTED_BACKENDS
 
@@ -39,8 +33,6 @@ class TestOCRFactory:
     def test_all_backends_fail_returns_null_engine(self) -> None:
         """When all backends fail, a null engine with is_available=False is returned."""
         with patch(
-            "docforge.usecases.ocr_factory._create_easyocr", return_value=None
-        ), patch(
             "docforge.usecases.ocr_factory._create_paddleocr", return_value=None
         ), patch(
             "docforge.usecases.ocr_factory._create_apple_vision", return_value=None
@@ -61,13 +53,13 @@ class TestOCRFactory:
             engine = create_ocr_engine("auto")
             assert engine is mock_engine
 
-    def test_auto_windows_prefers_easyocr(self) -> None:
-        """On Windows, EasyOCR should be tried first."""
+    def test_auto_windows_prefers_paddleocr(self) -> None:
+        """On Windows, PaddleOCR should be tried first."""
         mock_engine = MagicMock()
         mock_engine.is_available.return_value = True
 
         with patch("platform.system", return_value="Windows"), patch(
-            "docforge.usecases.ocr_factory._create_easyocr",
+            "docforge.usecases.ocr_factory._create_paddleocr",
             return_value=mock_engine,
         ):
             engine = create_ocr_engine("auto")

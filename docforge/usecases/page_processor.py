@@ -89,6 +89,7 @@ class PageProcessor:
         patterns: LearnedPatterns,
         use_ocr: bool,
         layout_detector: "LayoutDetector | None" = None,
+        force_ocr: bool = False,
     ) -> None:
         self._config = config
         self._llm_engine = llm_engine
@@ -100,6 +101,7 @@ class PageProcessor:
         self._patterns = patterns
         self._use_ocr = use_ocr
         self._layout_detector = layout_detector
+        self._force_ocr = force_ocr
 
     def process(
         self,
@@ -194,17 +196,18 @@ class PageProcessor:
             page_gate_result = None
             page_ocr_used = False
 
-            if page_type in (PageType.DIGITAL, PageType.MIXED):
-                # Reuse preliminary_blocks when we already extracted them
-                # (char_count >= 5). Falsy-check would re-extract for valid
-                # but empty pages — explicit None sentinel avoids that.
+            effective_type = page_type
+            if self._force_ocr and page_type == PageType.DIGITAL:
+                effective_type = PageType.SCANNED
+
+            if effective_type in (PageType.DIGITAL, PageType.MIXED):
                 blocks = (
                     preliminary_blocks
                     if preliminary_blocks or char_count >= 5
                     else reader.extract_text_blocks(doc, page_idx)
                 )
 
-            if page_type == PageType.SCANNED and self._use_ocr:
+            if effective_type == PageType.SCANNED and self._use_ocr:
                 with ocr_semaphore:
                     if ocr_engine is None:
                         ocr_engine = create_ocr_engine(config.ocr_backend)
@@ -218,7 +221,7 @@ class PageProcessor:
                         if ocr_blocks:
                             page_ocr_used = True
 
-            if page_type == PageType.MIXED and self._use_ocr:
+            if effective_type == PageType.MIXED and self._use_ocr:
                 with ocr_semaphore:
                     if ocr_engine is None:
                         ocr_engine = create_ocr_engine(config.ocr_backend)
@@ -247,7 +250,7 @@ class PageProcessor:
                 clean_blocks, morpheme_analyzer=self._morpheme_analyzer,
             )
 
-            merged_blocks = self._classify_and_merge(clean_blocks, page_type)
+            merged_blocks = self._classify_and_merge(clean_blocks, effective_type)
             merged_blocks = assign_hierarchy(merged_blocks, page_num=page_idx + 1)
 
             # Phase B-1: layout-detector boost (opt-in via config flag).
@@ -268,7 +271,7 @@ class PageProcessor:
                 plumber_doc, page_idx, page_width=width, page_height=height,
             )
 
-            if page_type == PageType.SCANNED and not page_tables:
+            if effective_type == PageType.SCANNED and not page_tables:
                 from docforge.adapters.paddle_table import PaddleTableExtractor
 
                 paddle_tables = PaddleTableExtractor()

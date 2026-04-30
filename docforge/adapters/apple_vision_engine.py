@@ -77,9 +77,14 @@ class AppleVisionOCREngine:
         import numpy as np
         import io
 
-        # Convert to PIL Image if needed
-        if isinstance(image, np.ndarray):
+        from docforge.domain.value_objects import RawImage
+
+        if isinstance(image, RawImage):
+            image = Image.fromarray(image.data)
+        elif isinstance(image, np.ndarray):
             image = Image.fromarray(image)
+        elif not isinstance(image, Image.Image):
+            raise TypeError(f"Unsupported image type: {type(image)}")
 
         # Convert PIL to NSData
         buffer = io.BytesIO()
