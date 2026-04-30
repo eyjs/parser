@@ -10,7 +10,14 @@ from docforge.domain.value_objects import BBox, DocumentProfile, FontInfo
 
 @dataclass(frozen=True)
 class TextBlock:
-    """A single text block extracted from a PDF page."""
+    """A single text block extracted from a PDF page.
+
+    ``block_id`` and ``parent_id`` are populated post-classification by
+    :func:`docforge.processing.heading_hierarchy.assign_hierarchy` to
+    represent the heading-tree position. They default to ``None`` so all
+    legacy constructions (``TextBlock(text, bbox, font, block_type)``)
+    keep working unchanged.
+    """
 
     text: str
     bbox: BBox
@@ -18,6 +25,8 @@ class TextBlock:
     block_type: BlockType = BlockType.TEXT
     heading_level: int = 0
     confidence: float = 1.0
+    block_id: str | None = None
+    parent_id: str | None = None
 
 
 @dataclass(frozen=True)

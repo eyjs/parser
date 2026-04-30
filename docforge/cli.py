@@ -37,11 +37,25 @@ Examples:
     )
 
     parser.add_argument("pdf", help="Input PDF file path")
-    parser.add_argument("-o", "--output", help="Output markdown file path")
+    parser.add_argument("-o", "--output", help="Output file path")
     parser.add_argument("--verify", action="store_true", help="Generate verification HTML report")
     parser.add_argument("--stats", action="store_true", help="Print parsing statistics")
     parser.add_argument("--force-ocr", action="store_true", help="Force OCR mode")
     parser.add_argument("--dpi", type=int, default=200, help="DPI for OCR/rendering (default: 200)")
+    parser.add_argument(
+        "--format", choices=["markdown", "chunks"], default="markdown",
+        help="Output format: markdown (default) or chunks (RAG JSONL)",
+    )
+    parser.add_argument(
+        "--strategy",
+        choices=["by_page", "by_title", "semantic", "fixed"],
+        default="by_title",
+        help="Chunking strategy when --format=chunks (default: by_title)",
+    )
+    parser.add_argument(
+        "--max-tokens", type=int, default=500,
+        help="Max tokens per chunk (default: 500)",
+    )
     parser.add_argument(
         "--header-ratio", type=float, default=0.08,
         help="Header area ratio (default: 0.08)",
@@ -70,10 +84,25 @@ Examples:
         print(f"Error during parsing: {exc}", file=sys.stderr)
         return 1
 
-    # Save markdown
-    output_path = resolve_output_path(pdf_path, Path(args.output) if args.output else None, ".md")
-    write_text(output_path, result.markdown)
-    print(f"\nMarkdown saved: {output_path}")
+    # Save output (markdown or chunks)
+    if args.format == "chunks":
+        from docforge.usecases.chunking import chunk_document
+        from docforge.usecases.chunking.serializer import chunks_to_jsonl
+
+        chunks = chunk_document(
+            result, strategy=args.strategy, max_tokens=args.max_tokens,
+        )
+        output_path = resolve_output_path(
+            pdf_path, Path(args.output) if args.output else None, ".jsonl",
+        )
+        write_text(output_path, chunks_to_jsonl(chunks))
+        print(f"\nChunks ({args.strategy}, {len(chunks)}) saved: {output_path}")
+    else:
+        output_path = resolve_output_path(
+            pdf_path, Path(args.output) if args.output else None, ".md",
+        )
+        write_text(output_path, result.markdown)
+        print(f"\nMarkdown saved: {output_path}")
 
     # Verification report
     if args.verify:

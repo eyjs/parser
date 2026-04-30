@@ -39,6 +39,7 @@ from docforge.processing import (
     text_structurer,
 )
 from docforge.processing.block_splitter import split_heading_body
+from docforge.processing.heading_hierarchy import assign_hierarchy
 from docforge.processing.llm_fallback_router import run_llm_fallback, should_invoke_llm
 from docforge.processing.noise_detector import LearnedPatterns
 from docforge.processing.table_quality_scorer import score_table
@@ -193,6 +194,7 @@ class PageProcessor:
             )
 
             merged_blocks = self._classify_and_merge(clean_blocks, page_type)
+            merged_blocks = assign_hierarchy(merged_blocks, page_num=page_idx + 1)
 
             page_tables = table_extractor.extract_from_page(
                 plumber_doc, page_idx, page_width=width, page_height=height,
