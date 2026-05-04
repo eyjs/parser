@@ -50,28 +50,32 @@ class TestHealth:
 
 
 class TestAuth:
-    def test_no_auth_when_key_not_configured(self, client):
-        """When DOCFORGE_INTERNAL_KEY is not set, auth is skipped."""
+    """Auth tests — CF-Connecting-IP based internal/external routing.
+
+    Without CF-Connecting-IP header the request is treated as internal
+    (Docker network) and auth is always skipped.
+    """
+
+    def test_internal_request_skips_auth(self, client):
+        """Internal request (no CF-Connecting-IP): auth skipped regardless of key config."""
         resp = client.get("/v1/health")
         assert resp.status_code == 200
 
-    def test_auth_missing_key_returns_401(self, app):
-        """When key is configured but request has no header, return 401."""
+    def test_internal_request_skips_auth_even_with_key_configured(self, app):
+        """Internal request with DOCFORGE_INTERNAL_KEY set still skips auth."""
         with patch.dict(os.environ, {"DOCFORGE_INTERNAL_KEY": "test-secret"}):
             test_app = create_app(
                 upload_dir=Path(app.config["UPLOAD_DIR"]).parent / "uploads2",
             )
             test_app.config["TESTING"] = True
             with test_app.test_client() as c:
+                # No CF-Connecting-IP => internal => auth skipped
                 resp = c.get("/v1/health")
-                assert resp.status_code == 401
-                data = resp.get_json()
-                assert data["success"] is False
-                assert data["error"]["code"] == "UNAUTHORIZED"
+                assert resp.status_code == 200
 
-    def test_auth_wrong_key_returns_401(self, app):
-        """When key is configured but request has wrong key, return 401."""
-        with patch.dict(os.environ, {"DOCFORGE_INTERNAL_KEY": "test-secret"}):
+    def test_external_request_allowed_when_auth_disabled(self, app):
+        """External request (CF-Connecting-IP present) with auth disabled: allowed."""
+        with patch.dict(os.environ, {"DOCFORGE_EXTERNAL_AUTH": "false"}):
             test_app = create_app(
                 upload_dir=Path(app.config["UPLOAD_DIR"]).parent / "uploads3",
             )
@@ -79,13 +83,16 @@ class TestAuth:
             with test_app.test_client() as c:
                 resp = c.get(
                     "/v1/health",
-                    headers={"X-Internal-Key": "wrong-key"},
+                    headers={"CF-Connecting-IP": "203.0.113.1"},
                 )
-                assert resp.status_code == 401
+                assert resp.status_code == 200
 
-    def test_auth_correct_key_passes(self, app):
-        """When correct key is provided, request proceeds."""
-        with patch.dict(os.environ, {"DOCFORGE_INTERNAL_KEY": "test-secret"}):
+    def test_external_request_missing_key_returns_401_when_auth_enabled(self, app):
+        """External request with auth enabled but no key header: 401."""
+        with patch.dict(os.environ, {
+            "DOCFORGE_EXTERNAL_AUTH": "true",
+            "DOCFORGE_INTERNAL_KEY": "test-secret",
+        }):
             test_app = create_app(
                 upload_dir=Path(app.config["UPLOAD_DIR"]).parent / "uploads4",
             )
@@ -93,19 +100,65 @@ class TestAuth:
             with test_app.test_client() as c:
                 resp = c.get(
                     "/v1/health",
-                    headers={"X-Internal-Key": "test-secret"},
+                    headers={"CF-Connecting-IP": "203.0.113.1"},
                 )
-                assert resp.status_code == 200
+                assert resp.status_code == 401
+                data = resp.get_json()
+                assert data["success"] is False
+                assert data["error"]["code"] == "UNAUTHORIZED"
 
-    def test_auth_skipped_for_legacy_routes(self, app):
-        """Legacy /api/ routes are not affected by auth."""
-        with patch.dict(os.environ, {"DOCFORGE_INTERNAL_KEY": "test-secret"}):
+    def test_external_request_wrong_key_returns_401_when_auth_enabled(self, app):
+        """External request with auth enabled and wrong key: 401."""
+        with patch.dict(os.environ, {
+            "DOCFORGE_EXTERNAL_AUTH": "true",
+            "DOCFORGE_INTERNAL_KEY": "test-secret",
+        }):
             test_app = create_app(
                 upload_dir=Path(app.config["UPLOAD_DIR"]).parent / "uploads5",
             )
             test_app.config["TESTING"] = True
             with test_app.test_client() as c:
-                # Legacy route (no auth required)
+                resp = c.get(
+                    "/v1/health",
+                    headers={
+                        "CF-Connecting-IP": "203.0.113.1",
+                        "X-Internal-Key": "wrong-key",
+                    },
+                )
+                assert resp.status_code == 401
+
+    def test_external_request_correct_key_passes_when_auth_enabled(self, app):
+        """External request with auth enabled and correct key: 200."""
+        with patch.dict(os.environ, {
+            "DOCFORGE_EXTERNAL_AUTH": "true",
+            "DOCFORGE_INTERNAL_KEY": "test-secret",
+        }):
+            test_app = create_app(
+                upload_dir=Path(app.config["UPLOAD_DIR"]).parent / "uploads6",
+            )
+            test_app.config["TESTING"] = True
+            with test_app.test_client() as c:
+                resp = c.get(
+                    "/v1/health",
+                    headers={
+                        "CF-Connecting-IP": "203.0.113.1",
+                        "X-Internal-Key": "test-secret",
+                    },
+                )
+                assert resp.status_code == 200
+
+    def test_auth_skipped_for_legacy_routes(self, app):
+        """Legacy /api/ routes are not affected by auth."""
+        with patch.dict(os.environ, {
+            "DOCFORGE_EXTERNAL_AUTH": "true",
+            "DOCFORGE_INTERNAL_KEY": "test-secret",
+        }):
+            test_app = create_app(
+                upload_dir=Path(app.config["UPLOAD_DIR"]).parent / "uploads7",
+            )
+            test_app.config["TESTING"] = True
+            with test_app.test_client() as c:
+                # Legacy route — auth middleware only applies to /v1/
                 resp = c.get("/api/history")
                 assert resp.status_code != 401
 

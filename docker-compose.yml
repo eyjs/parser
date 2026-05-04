@@ -1,0 +1,56 @@
+services:
+  docforge:
+    build: .
+    container_name: docforge
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "5051:5051"
+    environment:
+      # --- Authentication ---
+      # Internal key for X-Internal-Key header authentication.
+      # Used when DOCFORGE_EXTERNAL_AUTH=true to authenticate Tunnel requests.
+      # Internal (Docker network) requests always skip auth regardless of this value.
+      DOCFORGE_INTERNAL_KEY: ${DOCFORGE_INTERNAL_KEY:-dev-docforge-key-change-in-production}
+
+      # External authentication toggle (Cloudflare Tunnel requests).
+      # "false" (default): all external requests are allowed without auth.
+      # "true": external requests must provide X-Internal-Key header.
+      DOCFORGE_EXTERNAL_AUTH: "false"
+
+      # --- CORS ---
+      # Comma-separated allowed origins. Empty string = allow all origins.
+      # exe clients don't send Origin header, so CORS is effectively irrelevant.
+      DOCFORGE_ALLOWED_ORIGINS: ""
+
+      # --- VLM (Apple Silicon GPU on host) ---
+      # VLM runs on host via mlx_vlm; future HTTP adapter will use this URL.
+      # DOCFORGE_VLM_SERVER_URL: http://host.docker.internal:8105
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - kms-aip-shared
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      # Healthcheck runs inside the container (no CF-Connecting-IP header),
+      # so it is treated as an internal request and auth is skipped.
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:5051/v1/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+networks:
+  kms-aip-shared:
+    external: true
+
+volumes:
+  uploads:

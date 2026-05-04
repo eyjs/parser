@@ -27,7 +27,7 @@ def create_app(upload_dir: Path | None = None) -> Flask:
     # --- CORS ---
     _register_cors(app)
 
-    # --- X-Internal-Key auth for /v1/ routes ---
+    # --- Auth middleware for /v1/ routes (internal/external routing) ---
     from docforge.web.auth import register_auth
     register_auth(app)
 
@@ -50,13 +50,26 @@ def create_app(upload_dir: Path | None = None) -> Flask:
 
 
 def _register_cors(app: Flask) -> None:
-    """Register CORS headers based on DOCFORGE_ALLOWED_ORIGINS env var."""
+    """Register CORS headers based on DOCFORGE_ALLOWED_ORIGINS env var.
+
+    When ``DOCFORGE_ALLOWED_ORIGINS`` is empty (the default), **all** Origins
+    are allowed.  This is intentional:
+    - Desktop exe clients (the primary external consumer) do not send an
+      ``Origin`` header, so CORS is irrelevant for them.
+    - Browser-based tools (Swagger UI, curl-from-browser) benefit from
+      permissive CORS during the current tech-validation phase.
+
+    To restrict origins, set the env var to a comma-separated list, e.g.
+    ``DOCFORGE_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com``
+    """
     allowed_raw = os.environ.get("DOCFORGE_ALLOWED_ORIGINS", "")
     allowed_origins: list[str] = (
         [o.strip() for o in allowed_raw.split(",") if o.strip()]
         if allowed_raw
         else []
     )
+    # When allowed_origins is empty ([] / falsy), the condition
+    # ``not allowed_origins`` evaluates to True and every Origin is accepted.
 
     @app.after_request
     def _add_cors_headers(response):
