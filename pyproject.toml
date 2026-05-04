@@ -20,6 +20,9 @@ ocr = [
     "paddleocr>=2.7.0",
     "paddlepaddle>=2.6.0",
 ]
+excel = [
+    "openpyxl>=3.1.0",
+]
 morpheme = [
     "kiwipiepy>=0.18.0",
 ]
@@ -36,7 +39,7 @@ dev = [
     "ruff>=0.3.0",
 ]
 all = [
-    "docforge[ocr,morpheme,web,build,dev]",
+    "docforge[ocr,excel,morpheme,web,build,dev]",
 ]
 
 [project.scripts]

@@ -184,3 +184,103 @@ class TestParseSync:
         assert body["success"] is False
         assert body["error"]["code"] == "PARSE_ERROR"
         assert "관리자에게 문의" in body["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# CSV / Excel parse sync
+# ---------------------------------------------------------------------------
+
+
+class TestParseSyncCsv:
+    """CSV 파일 파싱 API 테스트."""
+
+    def test_csv_parse_success(self, client):
+        csv_content = b"name,age,city\nAlice,30,Seoul\nBob,25,Busan\n"
+        data = {
+            "file": (io.BytesIO(csv_content), "data.csv", "text/csv"),
+        }
+        resp = client.post(
+            "/v1/parse/sync",
+            data=data,
+            content_type="multipart/form-data",
+        )
+
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert "Alice" in body["data"]["markdown"]
+        assert "metadata" in body["data"]
+        assert "stats" in body["data"]
+
+    def test_csv_empty_file(self, client):
+        data = {
+            "file": (io.BytesIO(b""), "empty.csv", "text/csv"),
+        }
+        resp = client.post(
+            "/v1/parse/sync",
+            data=data,
+            content_type="multipart/form-data",
+        )
+
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["data"]["markdown"] == ""
+
+
+class TestParseSyncExcel:
+    """Excel 파일 파싱 API 테스트."""
+
+    def _make_xlsx(self) -> bytes:
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["name", "age"])
+        ws.append(["Alice", 30])
+        ws.append(["Bob", 25])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.read()
+
+    def test_xlsx_parse_success(self, client):
+        xlsx_content = self._make_xlsx()
+        data = {
+            "file": (
+                io.BytesIO(xlsx_content),
+                "data.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+        }
+        resp = client.post(
+            "/v1/parse/sync",
+            data=data,
+            content_type="multipart/form-data",
+        )
+
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert "Alice" in body["data"]["markdown"]
+        assert "metadata" in body["data"]
+        assert "stats" in body["data"]
+
+    def test_xls_mime_accepted(self, client):
+        """application/vnd.ms-excel MIME type is accepted."""
+        xlsx_content = self._make_xlsx()
+        data = {
+            "file": (
+                io.BytesIO(xlsx_content),
+                "data.xls",
+                "application/vnd.ms-excel",
+            ),
+        }
+        resp = client.post(
+            "/v1/parse/sync",
+            data=data,
+            content_type="multipart/form-data",
+        )
+
+        # Note: openpyxl may fail on .xls but MIME acceptance should work
+        # For this test we just check it's not rejected at MIME level
+        assert resp.status_code in (200, 500)  # 200 or parse error, not 415
