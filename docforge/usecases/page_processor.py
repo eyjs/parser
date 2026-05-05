@@ -301,6 +301,16 @@ class PageProcessor:
                 layout_label_map=layout_label_map,
             )
 
+            # Phase B-2+: VLM image captioning — fills alt_text for
+            # images that have actual bytes, using describe_image().
+            if page_images and self._llm_engine is not None and config.image_extraction_enabled:
+                from docforge.processing.image_vlm_captioner import caption_images
+                page_images = caption_images(
+                    page_images,
+                    self._llm_engine,
+                    prompt_hint=config.llm_domain_hint,
+                )
+
             page_content = PageContent(
                 page_num=page_idx + 1,
                 page_type=page_type,

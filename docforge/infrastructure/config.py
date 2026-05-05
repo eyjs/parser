@@ -136,8 +136,12 @@ class ParserConfig:
     max_workers: int = 1
     max_ocr_workers: int = 1
 
+    # VLM provider selection: "auto" | "local" | "openai" | "anthropic"
+    # "auto" tries local Qwen2-VL first, then cloud providers as fallback.
+    vlm_provider: str = "auto"
+
     # LLM Fallback
-    llm_fallback_enabled: bool = False
+    llm_fallback_enabled: bool = True
     llm_confidence_threshold: float = 0.7
     llm_confidence_margin: float = 0.05
     llm_char_loss_threshold: float = 0.8
@@ -168,7 +172,7 @@ class ParserConfig:
     # ``image_extraction_enabled`` (default False): in addition to
     #   placeholders, extract image bytes and emit ``![](path)`` markdown.
     image_placeholders_enabled: bool = True
-    image_extraction_enabled: bool = False
+    image_extraction_enabled: bool = True
     image_output_dir: str | None = None
     # Vertical pt distance window for image-caption matching.
     # Tighter for legal docs (where layout is dense), looser for academic

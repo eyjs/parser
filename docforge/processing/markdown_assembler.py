@@ -12,6 +12,7 @@ from docforge.domain.enums import BlockType, PageType
 from docforge.domain.models import (
     Metadata,
     PageContent,
+    ParsedImage,
     Table,
     TableCell,
     TextBlock,
@@ -86,6 +87,28 @@ def table_to_markdown(table: Table) -> str:
     return "\n".join(lines) + review_note
 
 
+def _deduplicate_tables(tables: tuple[Table, ...]) -> list[Table]:
+    """Remove duplicate tables with overlapping bounding boxes.
+
+    When multiple extraction passes detect the same physical table, the
+    resulting ``Table`` objects share near-identical bboxes.  We keep the
+    first occurrence and drop later ones whose IoU exceeds 0.8.
+    """
+    if len(tables) <= 1:
+        return list(tables)
+
+    kept: list[Table] = []
+    for table in tables:
+        is_dup = False
+        for existing in kept:
+            if table.bbox.iou(existing.bbox) > 0.8:
+                is_dup = True
+                break
+        if not is_dup:
+            kept.append(table)
+    return kept
+
+
 _COVER_SECTION_HEADER = "## [표지]"
 _TOC_SECTION_HEADER = "## [목차]"
 
@@ -114,7 +137,8 @@ def assemble_page(
     for block in page.blocks:
         elements.append((block.bbox.y0, "text", block))
 
-    for table in page.tables:
+    deduped_tables = _deduplicate_tables(page.tables)
+    for table in deduped_tables:
         elements.append((table.bbox.y0, "table", table))
 
     for image in page.images:
@@ -123,7 +147,7 @@ def assemble_page(
     elements.sort(key=lambda x: x[0])
 
     # Collect table regions for overlap filtering
-    table_regions = [t.bbox for t in page.tables]
+    table_regions = [t.bbox for t in deduped_tables]
 
     parts: list[str] = []
 

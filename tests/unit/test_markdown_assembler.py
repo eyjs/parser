@@ -12,6 +12,7 @@ from docforge.domain.models import (
 from docforge.domain.value_objects import BBox, FontInfo
 from docforge.infrastructure.config import ParserConfig
 from docforge.processing.markdown_assembler import (
+    _deduplicate_tables,
     assemble_page,
     finalize_markdown,
     table_to_markdown,
@@ -120,6 +121,84 @@ class TestPageAssembly:
         )
         md = assemble_page(page, 10.0, config)
         assert "① 보험계약자는" in md
+
+
+class TestTableDeduplication:
+    """Test table deduplication by IoU."""
+
+    def _make_table(
+        self,
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
+        text: str = "A",
+    ) -> Table:
+        cells = (
+            TableCell(text="H", row=0, col=0),
+            TableCell(text=text, row=1, col=0),
+        )
+        return Table(
+            cells=cells,
+            rows=2,
+            cols=1,
+            bbox=BBox(x0=x0, y0=y0, x1=x1, y1=y1),
+        )
+
+    def test_empty_tables(self) -> None:
+        assert _deduplicate_tables(()) == []
+
+    def test_single_table(self) -> None:
+        t = self._make_table(0, 0, 100, 100)
+        result = _deduplicate_tables((t,))
+        assert len(result) == 1
+        assert result[0] is t
+
+    def test_duplicate_tables_same_bbox(self) -> None:
+        t1 = self._make_table(0, 0, 100, 100, text="A")
+        t2 = self._make_table(0, 0, 100, 100, text="B")
+        result = _deduplicate_tables((t1, t2))
+        assert len(result) == 1
+        assert result[0] is t1
+
+    def test_non_overlapping_tables_kept(self) -> None:
+        t1 = self._make_table(0, 0, 100, 100)
+        t2 = self._make_table(200, 200, 300, 300)
+        result = _deduplicate_tables((t1, t2))
+        assert len(result) == 2
+
+    def test_high_iou_deduplicates(self) -> None:
+        """Two tables with IoU > 0.8 should collapse to one."""
+        t1 = self._make_table(0, 0, 100, 100)
+        # Slightly shifted -- still very high IoU
+        t2 = self._make_table(2, 2, 102, 102)
+        result = _deduplicate_tables((t1, t2))
+        assert len(result) == 1
+
+    def test_low_iou_keeps_both(self) -> None:
+        """Two tables with IoU < 0.8 should both be kept."""
+        t1 = self._make_table(0, 0, 100, 100)
+        # Overlap is about 50x50 = 2500, union = 10000+10000-2500=17500, IoU~0.14
+        t2 = self._make_table(50, 50, 150, 150)
+        result = _deduplicate_tables((t1, t2))
+        assert len(result) == 2
+
+    def test_assemble_page_deduplicates(self) -> None:
+        """End-to-end: duplicate tables appear only once in assembled markdown."""
+        config = ParserConfig()
+        t1 = self._make_table(0, 200, 400, 300, text="ValueA")
+        t2 = self._make_table(0, 200, 400, 300, text="ValueB")
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(t1, t2),
+            raw_text="",
+        )
+        md = assemble_page(page, 10.0, config)
+        # Only the first table should appear
+        assert "ValueA" in md
+        assert "ValueB" not in md
 
 
 class TestFinalMarkdown:

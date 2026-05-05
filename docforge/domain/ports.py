@@ -188,7 +188,7 @@ class LayoutDetector(Protocol):
 
 
 class VisionLLMEngine(Protocol):
-    """Port for Vision LLM — page-level text correction."""
+    """Port for Vision LLM — page-level text correction and image captioning."""
 
     def correct_page(
         self,
@@ -196,6 +196,25 @@ class VisionLLMEngine(Protocol):
         ocr_blocks: list[TextBlock],
         prompt_hint: str = "",
     ) -> list[TextBlock]:
+        """Correct OCR output using vision LLM on the page image."""
+        ...
+
+    def describe_image(
+        self,
+        image_data: bytes,
+        format: str = "png",
+        prompt_hint: str = "",
+    ) -> str:
+        """Generate a concise alt-text description for an image.
+
+        Args:
+            image_data: Raw image bytes (PNG or JPEG).
+            format: Image format — ``"png"`` or ``"jpeg"``.
+            prompt_hint: Optional domain hint for more relevant captions.
+
+        Returns:
+            A short description string, or ``""`` on failure.
+        """
         ...
 
     def is_available(self) -> bool:

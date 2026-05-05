@@ -72,9 +72,9 @@ class TestParallelConfig:
 
 
 class TestLLMConfig:
-    def test_llm_fallback_disabled_by_default(self):
+    def test_llm_fallback_enabled_by_default(self):
         config = ParserConfig()
-        assert config.llm_fallback_enabled is False
+        assert config.llm_fallback_enabled is True
 
     def test_llm_config_fields(self):
         config = ParserConfig(
@@ -210,6 +210,7 @@ class TestVisionLLMEngineProtocol:
         from docforge.domain.ports import VisionLLMEngine
         assert hasattr(VisionLLMEngine, 'correct_page')
         assert hasattr(VisionLLMEngine, 'is_available')
+        assert hasattr(VisionLLMEngine, 'describe_image')
 
 
 class TestParseResultWithLLMRecords:

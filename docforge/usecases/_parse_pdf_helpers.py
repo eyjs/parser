@@ -128,17 +128,65 @@ def build_layout_detector(config: ParserConfig):
 
 
 def build_llm_engine(config: ParserConfig) -> "VisionLLMEngine | None":
+    """Build a VLM engine using the fallback chain: local -> cloud.
+
+    Respects ``config.vlm_provider``:
+      - ``"auto"``: try local Qwen2-VL, then cloud (OpenAI -> Anthropic)
+      - ``"local"``: local only, None if unavailable
+      - ``"openai"`` / ``"anthropic"``: cloud only with specified provider
+    """
     if not (config.llm_fallback_enabled or config.region_vlm_enabled):
         return None
+
+    provider = config.vlm_provider
+
+    # 1) Local Qwen2-VL attempt
+    if provider in ("auto", "local"):
+        engine = _try_local_vlm()
+        if engine is not None:
+            return engine
+        if provider == "local":
+            logger.info("VLM disabled — local Qwen2-VL not available and provider=local")
+            return None
+
+    # 2) Cloud VLM attempt
+    if provider in ("auto", "openai", "anthropic"):
+        engine = _try_cloud_vlm(provider)
+        if engine is not None:
+            return engine
+
+    logger.info("VLM disabled — no available VLM engine")
+    return None
+
+
+def _try_local_vlm() -> "VisionLLMEngine | None":
+    """Attempt to create a local Qwen2-VL MLX engine."""
     try:
         from docforge.adapters.vision_llm_engine import Qwen2VLMLXEngine
         candidate = Qwen2VLMLXEngine()
         if candidate.is_available():
+            logger.info("VLM engine: local Qwen2-VL MLX")
             return candidate
-        logger.info("LLM fallback disabled — mlx_vlm not installed")
+        logger.info("Local Qwen2-VL not available (mlx_vlm not installed or model not cached)")
         return None
     except Exception:
-        logger.warning("LLM engine init failed, LLM fallback disabled", exc_info=True)
+        logger.warning("Local VLM engine init failed", exc_info=True)
+        return None
+
+
+def _try_cloud_vlm(provider: str) -> "VisionLLMEngine | None":
+    """Attempt to create a cloud VLM engine (OpenAI or Anthropic)."""
+    try:
+        from docforge.adapters.cloud_vlm_engine import CloudVisionEngine
+        cloud_provider = provider if provider in ("openai", "anthropic") else "auto"
+        candidate = CloudVisionEngine(provider=cloud_provider)
+        if candidate.is_available():
+            logger.info("VLM engine: cloud (%s)", cloud_provider)
+            return candidate
+        logger.info("Cloud VLM not available (no API keys configured)")
+        return None
+    except Exception:
+        logger.warning("Cloud VLM engine init failed", exc_info=True)
         return None
 
 

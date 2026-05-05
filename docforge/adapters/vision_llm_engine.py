@@ -29,6 +29,17 @@ _PROMPT_TEMPLATE = """\
 - 출력: 추출된 텍스트만 (설명 없이)
 """
 
+_CAPTION_PROMPT = """\
+이 이미지의 내용을 간결하게 설명하세요.
+도메인: {domain_hint}
+요구사항:
+- 문서 내 그림/차트/다이어그램이면 핵심 내용 요약
+- 로고/아이콘이면 무엇인지 식별
+- 한국어로 답변
+- 1-2문장으로 간결하게
+- 출력: 설명만 (접두어 없이)
+"""
+
 
 class Qwen2VLMLXEngine:
     """VisionLLMEngine implementation — Qwen2-VL-7B MLX."""
@@ -41,12 +52,14 @@ class Qwen2VLMLXEngine:
         self._load_lock = threading.Lock()
 
     def is_available(self) -> bool:
+        """Check mlx packages AND model cache existence."""
         try:
             import mlx.core  # noqa: F401
             from mlx_vlm import load  # noqa: F401
-            return True
         except ImportError:
             return False
+        # Verify model cache exists in HuggingFace hub
+        return _check_model_cache(self._model_id)
 
     def _ensure_loaded(self) -> None:
         if self._model is not None:
@@ -74,6 +87,26 @@ class Qwen2VLMLXEngine:
         corrected_text = self._run_inference(pil_image, prompt)
         return _text_to_blocks(corrected_text, image)
 
+    def describe_image(
+        self,
+        image_data: bytes,
+        format: str = "png",
+        prompt_hint: str = "",
+    ) -> str:
+        """Generate alt-text for an image using local Qwen2-VL."""
+        if not image_data:
+            return ""
+        try:
+            self._ensure_loaded()
+            pil_image = _bytes_to_pil(image_data, format)
+            prompt = _CAPTION_PROMPT.format(
+                domain_hint=prompt_hint or "문서",
+            )
+            return self._run_inference(pil_image, prompt).strip()
+        except Exception:
+            logger.warning("Qwen2-VL describe_image failed", exc_info=True)
+            return ""
+
     def _run_inference(self, pil_image: object, prompt: str) -> str:
         from mlx_vlm import generate
         from mlx_vlm.prompt_utils import apply_chat_template
@@ -96,6 +129,37 @@ def _raw_image_to_pil(image: RawImage) -> object:
     if image.channels == 1:
         return Image.fromarray(data.squeeze(), mode="L")
     return Image.fromarray(data.astype(np.uint8), mode="RGB")
+
+
+def _check_model_cache(model_id: str) -> bool:
+    """Check whether the HuggingFace model cache directory exists.
+
+    This prevents ``is_available()`` from returning True when the model
+    has never been downloaded, which would trigger a multi-GB download on
+    first inference.
+    """
+    import os
+    from pathlib import Path
+
+    cache_dir = Path(
+        os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"),
+    ) / "hub"
+    # HF stores models as "models--org--name"
+    model_dir_name = "models--" + model_id.replace("/", "--")
+    model_path = cache_dir / model_dir_name
+    if model_path.is_dir():
+        # Check that at least one snapshot exists
+        snapshots = model_path / "snapshots"
+        if snapshots.is_dir() and any(snapshots.iterdir()):
+            return True
+    return False
+
+
+def _bytes_to_pil(data: bytes, fmt: str = "png") -> object:
+    """Convert raw image bytes to a PIL Image."""
+    import io
+    from PIL import Image
+    return Image.open(io.BytesIO(data))
 
 
 def _text_to_blocks(text: str, image: RawImage) -> list[TextBlock]:
