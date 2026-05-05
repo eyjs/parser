@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 
@@ -138,7 +139,10 @@ class ParserConfig:
 
     # VLM provider selection: "auto" | "local" | "openai" | "anthropic"
     # "auto" tries local Qwen2-VL first, then cloud providers as fallback.
-    vlm_provider: str = "auto"
+    # Reads DOCFORGE_VLM_PROVIDER env var if not explicitly provided.
+    vlm_provider: str = field(
+        default_factory=lambda: os.environ.get("DOCFORGE_VLM_PROVIDER", "auto"),
+    )
 
     # LLM Fallback
     llm_fallback_enabled: bool = True

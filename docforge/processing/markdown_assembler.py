@@ -132,7 +132,7 @@ def assemble_page(
         return _assemble_marker_page(page, _TOC_SECTION_HEADER)
 
     # Build sortable elements: (y_position, type, element)
-    elements: list[tuple[float, str, TextBlock | Table]] = []
+    elements: list[tuple[float, str, TextBlock | Table | ParsedImage]] = []
 
     for block in page.blocks:
         elements.append((block.bbox.y0, "text", block))

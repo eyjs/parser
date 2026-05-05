@@ -50,6 +50,9 @@ _CAPTION_PROMPT = """\
 """
 
 
+_UNRESOLVED = object()
+
+
 class CloudVisionEngine:
     """Cloud VLM adapter -- OpenAI GPT-4o vision or Anthropic Claude vision.
 
@@ -61,7 +64,7 @@ class CloudVisionEngine:
 
     def __init__(self, provider: str = "auto") -> None:
         self._provider = provider
-        self._resolved_provider: str | None = None
+        self._resolved_provider: str | object = _UNRESOLVED
 
     def is_available(self) -> bool:
         """True when at least one cloud provider has a valid API key."""
@@ -116,8 +119,8 @@ class CloudVisionEngine:
 
     def _resolve_provider(self) -> str | None:
         """Determine which cloud provider to use based on available API keys."""
-        if self._resolved_provider is not None:
-            return self._resolved_provider
+        if self._resolved_provider is not _UNRESOLVED:
+            return self._resolved_provider  # type: ignore[return-value]
 
         if self._provider in ("auto", "openai"):
             if os.environ.get("OPENAI_API_KEY"):
@@ -129,6 +132,7 @@ class CloudVisionEngine:
                 self._resolved_provider = "anthropic"
                 return "anthropic"
 
+        self._resolved_provider = None
         return None
 
     def _call_vision_api(
@@ -201,7 +205,8 @@ class CloudVisionEngine:
             ],
         )
         if response.content and len(response.content) > 0:
-            return response.content[0].text
+            block = response.content[0]
+            return block.text if hasattr(block, "text") else ""
         return ""
 
 

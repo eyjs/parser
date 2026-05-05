@@ -23,9 +23,12 @@ services:
       # exe clients don't send Origin header, so CORS is effectively irrelevant.
       DOCFORGE_ALLOWED_ORIGINS: ""
 
-      # --- VLM (Apple Silicon GPU on host) ---
-      # VLM runs on host via mlx_vlm; future HTTP adapter will use this URL.
-      # DOCFORGE_VLM_SERVER_URL: http://host.docker.internal:8105
+      # --- VLM (Cloud providers for Docker) ---
+      # VLM provider selection: "auto" | "openai" | "anthropic"
+      # "auto" tries OpenAI first, then Anthropic (local MLX unavailable in Docker).
+      DOCFORGE_VLM_PROVIDER: ${DOCFORGE_VLM_PROVIDER:-auto}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - uploads:/app/uploads
     networks:
