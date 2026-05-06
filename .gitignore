@@ -64,5 +64,10 @@ uploads/
 # Output
 output/
 
+# Test outputs / results
+test_pdfs/
+test_output*.md
+test_apple_vision_ocr.md
+
 # One-off scripts
 test_ocr_check.py

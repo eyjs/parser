@@ -150,6 +150,7 @@ def parse_pdf(
 
     _log("[5/6] Merging cross-page tables...")
     parsed_pages = _h.merge_cross_page_tables(parsed_pages, all_page_tables, config)
+    parsed_pages = _h.promote_numbered_headings(parsed_pages)
 
     _log("[6/6] Assembling markdown...")
     # on_page_done already fired per-page in the coordinator loop above —

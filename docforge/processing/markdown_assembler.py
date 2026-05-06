@@ -23,6 +23,15 @@ from docforge.infrastructure.metadata import generate_front_matter
 
 
 _LEADER_DOTS_ONLY_RE = re.compile(r"^[\s·…]+$")
+_UNICODE_BULLET_RE = re.compile(r"^[●•][​\s]*")
+_UNICODE_SUB_BULLET_RE = re.compile(r"^[○◦][​\s]*")
+
+
+def _convert_unicode_bullets(text: str) -> str:
+    """Convert Unicode bullet characters to markdown list syntax."""
+    text = _UNICODE_BULLET_RE.sub("- ", text)
+    text = _UNICODE_SUB_BULLET_RE.sub("  - ", text)
+    return text
 
 
 def _is_junk_table(grid: list[list[str]]) -> bool:
@@ -193,6 +202,7 @@ def assemble_page(
             elif elem.block_type in (BlockType.SUBCLAUSE, BlockType.ITEM):
                 parts.append(f"  {text}")
             else:
+                text = _convert_unicode_bullets(text)
                 parts.append(text)
 
     return "\n".join(parts)
@@ -254,8 +264,8 @@ def finalize_markdown(
     """Combine page markdowns with separators, add front matter, and post-process."""
     front_matter = generate_front_matter(metadata)
     body = "\n\n---\n\n".join(page_markdowns)
-    raw = front_matter + "\n\n" + body
-    return _post_process(raw)
+    body = _post_process(body)
+    return front_matter + "\n\n" + body
 
 
 _LEADER_DOT_RE = re.compile(r"\s*·{3,}\s*")
@@ -265,10 +275,11 @@ _STRUCTURE_START_RE = re.compile(
     r"#{1,6}\s"
     r"|제\s*\d+\s*[편장절관조]"
     r"|[①-⑩]\s*"
+    r"|\d+\.\d+(?:\.\d+)?\s+"
     r"|\d+\.\s+"
     r"|[가-하]\.\s+"
     r"|-\s+"
-    r"|○\s*"
+    r"|[●○•◦]\s*"
     r"|\|"
     r"|>"
     r"|---"
@@ -345,13 +356,16 @@ def _merge_broken_lines(text: str) -> str:
 
 
 def _is_inside_table(bbox: BBox, table_regions: list[BBox]) -> bool:
-    """Check if a text block's center falls within any table region."""
+    """Check if a text block overlaps significantly with any table region."""
+    bbox_area = (bbox.x1 - bbox.x0) * (bbox.y1 - bbox.y0)
+    if bbox_area <= 0:
+        return False
     for tr in table_regions:
-        if (
-            bbox.center_y >= tr.y0 - 2
-            and bbox.center_y <= tr.y1 + 2
-            and bbox.x0 >= tr.x0 - 5
-            and bbox.x1 <= tr.x1 + 5
-        ):
-            return True
+        ox0 = max(bbox.x0, tr.x0)
+        oy0 = max(bbox.y0, tr.y0)
+        ox1 = min(bbox.x1, tr.x1)
+        oy1 = min(bbox.y1, tr.y1)
+        if ox0 < ox1 and oy0 < oy1:
+            if (ox1 - ox0) * (oy1 - oy0) / bbox_area > 0.3:
+                return True
     return False

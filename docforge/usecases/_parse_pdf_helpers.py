@@ -11,7 +11,9 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from docforge.domain.enums import DocumentComplexity
+import re
+
+from docforge.domain.enums import BlockType, DocumentComplexity
 from docforge.domain.models import (
     LLMFallbackRecord,
     Metadata,
@@ -19,6 +21,7 @@ from docforge.domain.models import (
     PageContent,
     RegionVLMRecord,
     Table,
+    TextBlock,
 )
 from docforge.infrastructure.config import ParserConfig
 from docforge.processing import markdown_assembler, noise_detector, table_merger
@@ -268,6 +271,67 @@ def merge_cross_page_tables(
             confidence=page.confidence,
             images=page.images,
         ))
+    return updated
+
+
+_SIMPLE_NUMBERED_RE = re.compile(r"^\d{1,2}\.\s+\S")
+_MAX_PROMOTE_LENGTH = 80
+
+
+def promote_numbered_headings(
+    parsed_pages: list[PageContent],
+) -> list[PageContent]:
+    """Promote 'N. ' subclauses to headings when the document has none.
+
+    Documents like 사업방법서 use simple numbered format (1., 2., ...)
+    without bold/size distinction. When no HEADING blocks exist at all,
+    short 'N. ' SUBCLAUSE blocks are promoted to HEADING h3.
+    """
+    has_heading = any(
+        b.block_type == BlockType.HEADING
+        for p in parsed_pages
+        for b in p.blocks
+    )
+    if has_heading:
+        return parsed_pages
+
+    updated: list[PageContent] = []
+    for page in parsed_pages:
+        new_blocks: list[TextBlock] = []
+        changed = False
+        for b in page.blocks:
+            if (
+                b.block_type == BlockType.SUBCLAUSE
+                and _SIMPLE_NUMBERED_RE.match(b.text.strip())
+                and len(b.text.strip()) <= _MAX_PROMOTE_LENGTH
+            ):
+                new_blocks.append(TextBlock(
+                    text=b.text,
+                    bbox=b.bbox,
+                    font=b.font,
+                    block_type=BlockType.HEADING,
+                    heading_level=3,
+                    confidence=b.confidence,
+                    block_id=b.block_id,
+                    parent_id=b.parent_id,
+                ))
+                changed = True
+            else:
+                new_blocks.append(b)
+        if changed:
+            updated.append(PageContent(
+                page_num=page.page_num,
+                page_type=page.page_type,
+                blocks=tuple(new_blocks),
+                tables=page.tables,
+                raw_text=page.raw_text,
+                width=page.width,
+                height=page.height,
+                confidence=page.confidence,
+                images=page.images,
+            ))
+        else:
+            updated.append(page)
     return updated
 
 

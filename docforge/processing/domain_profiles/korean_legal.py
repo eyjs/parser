@@ -39,8 +39,13 @@ _ITEM_PATTERNS = [
     re.compile(r"^[ⅰ-ⅹ]\)\s*"),
 ]
 
+# Decimal subsection patterns (e.g. "2.1", "3.2.1") — treated as sub-headings
+_DECIMAL_SUBSECTION_PATTERN = re.compile(r"^\d+\.\d+(?:\.\d+)?\s+")
+
 # Numbering hierarchy for heading-level adjustment when font is heading-like.
 _NUMBERING_DEPTH: list[tuple[re.Pattern[str], int]] = [
+    (re.compile(r"^\d+\.\d+\.\d+\s+"), 3),
+    (re.compile(r"^\d+\.\d+\s+"), 1),
     (re.compile(r"^[가나다라마바사아자차카타파하]\.\s+"), 2),
     (re.compile(r"^\(\d+\)\s*"), 2),
 ]
@@ -48,7 +53,8 @@ _NUMBERING_DEPTH: list[tuple[re.Pattern[str], int]] = [
 # Any recognized numbering prefix — used to gate font-based heading promotion.
 _ANY_NUMBERING_PREFIX = re.compile(
     r"^("
-    r"\d+\.\s"
+    r"\d+\.\d+(?:\.\d+)?\s"
+    r"|\d+\.\s"
     r"|[가나다라마바사아자차카타파하]\.\s"
     r"|\(\d+\)\s"
     r")"
@@ -85,6 +91,11 @@ class KoreanLegalProfile:
         for pattern in _ITEM_PATTERNS:
             if pattern.match(stripped):
                 return BlockType.ITEM, 0
+
+        if _DECIMAL_SUBSECTION_PATTERN.match(stripped) and len(stripped) <= _MAX_HEADING_LENGTH:
+            prefix = stripped.split()[0]
+            depth = prefix.count(".")
+            return BlockType.HEADING, min(3 + depth, 6)
 
         if avg_font_size > 0:
             base_level = 0

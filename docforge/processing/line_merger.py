@@ -255,13 +255,28 @@ def _should_split(
 
     # --- Split conditions (any match -> new block) ---
 
-    # Previous block is a heading — next block is always separate
     prev_type, _ = classify_block(prev_text, prev.font.size, prev.font.is_bold, avg_font_size)
-    if prev_type == BlockType.HEADING:
-        return True
+    block_type, _ = classify_block(curr_text, curr.font.size, curr.font.is_bold, avg_font_size)
 
-    # Structure pattern detected in next line
-    block_type, level = classify_block(curr_text, curr.font.size, curr.font.is_bold, avg_font_size)
+    if prev_type == BlockType.HEADING:
+        same_font = (
+            abs(curr.font.size - prev.font.size) < 0.5
+            and curr.font.is_bold == prev.font.is_bold
+        )
+        normal_gap = avg_line_gap <= 0 or (
+            curr.bbox.y0 - prev.bbox.y1 <= avg_line_gap * config.line_gap_multiplier
+        )
+        similar_indent = abs(curr.bbox.x0 - prev.bbox.x0) <= config.indent_tolerance
+        is_continuation = (
+            same_font
+            and normal_gap
+            and similar_indent
+            and block_type == BlockType.TEXT
+            and len(prev_text) <= 40
+        )
+        if is_continuation:
+            return False
+        return True
     if block_type == BlockType.HEADING:
         return True
     if block_type == BlockType.CLAUSE:

@@ -67,6 +67,7 @@ def extract_images(
         return []
 
     out: list[ParsedImage] = []
+    seen_bboxes: list[BBox] = []
     page_num = page_idx + 1
     for img_info in raw_images:
         xref = img_info[0] if isinstance(img_info, (list, tuple)) else img_info.get("xref")
@@ -75,11 +76,13 @@ def extract_images(
         bbox = _resolve_bbox(page, xref, img_info)
         if bbox is None:
             continue
+        if any(bbox.iou(sb) > 0.9 for sb in seen_bboxes):
+            continue
+        seen_bboxes.append(bbox)
         block_id = _make_image_id(int(xref), page_num, bbox)
         if include_bytes:
             data, fmt = _extract_bytes(doc, xref)
             if not data:
-                # bytes failed but we still want the placeholder
                 data, fmt = b"", "png"
         else:
             data, fmt = b"", "png"
