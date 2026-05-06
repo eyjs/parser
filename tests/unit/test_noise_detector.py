@@ -6,6 +6,7 @@ from docforge.domain.value_objects import BBox, FontInfo
 from docforge.infrastructure.config import ParserConfig
 from docforge.processing.noise_detector import (
     LearnedPatterns,
+    _normalize_for_matching,
     classify_noise,
     filter_noise_from_blocks,
     is_page_number,
@@ -46,6 +47,36 @@ class TestPageNumberDetection:
 
     def test_long_text(self) -> None:
         assert not is_page_number("이 약관에서 사용하는 용어")
+
+
+class TestNormalizeForMatching:
+    """Test text normalization that strips trailing/leading page numbers."""
+
+    def test_strips_trailing_page_number(self) -> None:
+        assert _normalize_for_matching("상품명 31") == "상품명"
+
+    def test_strips_trailing_page_number_multi_digit(self) -> None:
+        assert _normalize_for_matching("상품명 199") == "상품명"
+
+    def test_normalizes_same_text_with_different_page_numbers(self) -> None:
+        a = _normalize_for_matching("무배당 프로미라이프 31")
+        b = _normalize_for_matching("무배당 프로미라이프 51")
+        assert a == b == "무배당 프로미라이프"
+
+    def test_strips_leading_page_number(self) -> None:
+        assert _normalize_for_matching("31 무배당 프로미라이프") == "무배당 프로미라이프"
+
+    def test_pure_number_returns_empty(self) -> None:
+        assert _normalize_for_matching("42") == ""
+
+    def test_preserves_embedded_numbers(self) -> None:
+        assert _normalize_for_matching("제1조 목적") == "제1조 목적"
+
+    def test_preserves_normal_text(self) -> None:
+        assert _normalize_for_matching("상품요약서") == "상품요약서"
+
+    def test_unifies_whitespace(self) -> None:
+        assert _normalize_for_matching("무배당   프로미라이프   31") == "무배당 프로미라이프"
 
 
 class TestNoiseClassification:
@@ -109,6 +140,17 @@ class TestPatternLearning:
 
         patterns = learn_patterns(pages_data, config)
         assert "보험약관" in patterns.header_patterns
+
+    def test_learns_footer_with_variable_page_numbers(self) -> None:
+        config = ParserConfig(min_noise_repeat=3)
+        pages_data = [
+            {"lines": [("상품명 1", 780.0, 10.0)], "page_height": 800.0},
+            {"lines": [("상품명 2", 780.0, 10.0)], "page_height": 800.0},
+            {"lines": [("상품명 3", 780.0, 10.0)], "page_height": 800.0},
+        ]
+
+        patterns = learn_patterns(pages_data, config)
+        assert "상품명" in patterns.footer_patterns
 
     def test_ignores_non_repeated(self) -> None:
         config = ParserConfig(min_noise_repeat=3)

@@ -32,12 +32,22 @@ class LearnedPatterns:
     watermark_patterns: frozenset[str]
 
 
+_TRAILING_PAGE_NUM = re.compile(r"\s+\d{1,4}\s*$")
+_LEADING_PAGE_NUM = re.compile(r"^\s*\d{1,4}\s+")
+
+
 def _normalize_for_matching(text: str) -> str:
-    """Normalize text for pattern matching: unify whitespace, remove pure numbers."""
+    """Normalize text for pattern matching.
+
+    Unifies whitespace, removes pure page numbers, and strips trailing/leading
+    page numbers so that "상품명 31" and "상품명 51" both normalize to "상품명".
+    """
     text = re.sub(r"\s+", " ", text).strip()
     if re.match(r"^\d+$", text):
         return ""
-    return text
+    text = _TRAILING_PAGE_NUM.sub("", text)
+    text = _LEADING_PAGE_NUM.sub("", text)
+    return text.strip()
 
 
 def learn_patterns(
