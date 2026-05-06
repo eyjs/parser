@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import re
 
+import logging
+
 from docforge.domain.models import TextBlock
 from docforge.domain.value_objects import BBox, FontInfo
 from docforge.domain.enums import BlockType
 from docforge.infrastructure.config import ParserConfig
+
+logger = logging.getLogger(__name__)
 
 # Circled number unicode range for restoration
 _CIRCLED_NUMS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
@@ -41,11 +45,10 @@ def correct_blocks(
         new_text = _correct_text(block.text, config)
         new_confidence = block.confidence
 
-        # Mark low-confidence blocks
         if block.confidence < config.ocr_confidence_fail:
-            new_text = new_text + " [OCR recognition failed]"
+            logger.warning("OCR recognition failed (conf=%.2f): %s", block.confidence, new_text[:80])
         elif block.confidence < config.ocr_confidence_low:
-            new_text = new_text + " [low OCR confidence]"
+            logger.info("Low OCR confidence (conf=%.2f): %s", block.confidence, new_text[:80])
 
         corrected.append(TextBlock(
             text=new_text,

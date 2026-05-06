@@ -34,17 +34,19 @@ class TestOCRCorrection:
         result = correct_blocks(blocks, config)
         assert "2월 보험료" in result[0].text
 
-    def test_low_confidence_marked(self) -> None:
+    def test_low_confidence_not_injected_into_text(self) -> None:
         config = ParserConfig()
         blocks = [_make_ocr_block("인식 결과", confidence=0.6)]
         result = correct_blocks(blocks, config)
-        assert "[low OCR confidence]" in result[0].text
+        assert "[" not in result[0].text
+        assert result[0].text == "인식 결과"
 
-    def test_very_low_confidence_marked(self) -> None:
+    def test_very_low_confidence_not_injected_into_text(self) -> None:
         config = ParserConfig()
         blocks = [_make_ocr_block("깨진 텍스트", confidence=0.3)]
         result = correct_blocks(blocks, config)
-        assert "[OCR recognition failed]" in result[0].text
+        assert "[" not in result[0].text
+        assert result[0].text == "깨진 텍스트"
 
     def test_high_confidence_no_mark(self) -> None:
         config = ParserConfig()

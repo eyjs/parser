@@ -23,6 +23,11 @@ services:
       # exe clients don't send Origin header, so CORS is effectively irrelevant.
       DOCFORGE_ALLOWED_ORIGINS: ""
 
+      # --- OCR (Apple Vision via host) ---
+      # The macOS host runs ocr_service.py to expose Apple Vision OCR.
+      # Docker calls it via host.docker.internal.
+      DOCFORGE_OCR_SERVICE_URL: ${DOCFORGE_OCR_SERVICE_URL:-http://host.docker.internal:5052}
+
       # --- VLM (Cloud providers for Docker) ---
       # VLM provider selection: "auto" | "openai" | "anthropic"
       # "auto" tries OpenAI first, then Anthropic (local MLX unavailable in Docker).

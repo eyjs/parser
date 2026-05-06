@@ -3,6 +3,10 @@
 Creates the appropriate OCR engine based on configuration.
 Supports graceful degradation: if preferred backend is unavailable,
 falls back to the next available one.
+
+Priority order (auto):
+  macOS host:  Apple Vision (local) → PaddleOCR
+  Docker/Linux: Apple Vision (remote via host) → PaddleOCR
 """
 
 from __future__ import annotations
@@ -12,15 +16,15 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_BACKENDS = ("apple_vision", "paddleocr")
+SUPPORTED_BACKENDS = ("apple_vision", "apple_vision_remote", "paddleocr")
 
 
 def create_ocr_engine(backend: str = "auto") -> Any:
     """Create an OCR engine instance.
 
     Args:
-        backend: Backend name ('apple_vision', 'paddleocr', 'auto').
-                 'auto' tries backends in priority order.
+        backend: Backend name or 'auto'.
+                 'auto' tries backends in platform-dependent priority order.
 
     Returns:
         An OCR engine implementing the OCREngine protocol.
@@ -30,6 +34,7 @@ def create_ocr_engine(backend: str = "auto") -> Any:
 
     factory_map = {
         "apple_vision": _create_apple_vision,
+        "apple_vision_remote": _create_apple_vision_remote,
         "paddleocr": _create_paddleocr,
     }
 
@@ -53,11 +58,7 @@ def create_ocr_engine(backend: str = "auto") -> Any:
 
 
 def _create_auto() -> Any:
-    """Try backends in platform-dependent priority order.
-
-    macOS: Apple Vision -> PaddleOCR
-    Others: PaddleOCR -> Apple Vision
-    """
+    """Try backends in platform-dependent priority order."""
     import platform
 
     if platform.system() == "Darwin":
@@ -67,8 +68,8 @@ def _create_auto() -> Any:
         ]
     else:
         order = [
+            ("apple_vision_remote", _create_apple_vision_remote),
             ("paddleocr", _create_paddleocr),
-            ("apple_vision", _create_apple_vision),
         ]
 
     for name, factory in order:
@@ -95,6 +96,15 @@ def _create_apple_vision() -> Any:
     try:
         from docforge.adapters.apple_vision_engine import AppleVisionOCREngine
         return AppleVisionOCREngine()
+    except Exception:
+        return None
+
+
+def _create_apple_vision_remote() -> Any:
+    """Create remote Apple Vision OCR engine (calls host via HTTP)."""
+    try:
+        from docforge.adapters.apple_vision_remote import AppleVisionRemoteEngine
+        return AppleVisionRemoteEngine()
     except Exception:
         return None
 
