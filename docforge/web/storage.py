@@ -36,13 +36,18 @@ class TaskRecord:
 
 
 class TaskStore:
-    """Thread-safe in-memory task store with JSON persistence."""
+    """Thread-safe in-memory task store with JSON persistence.
+
+    Multi-worker safe: checks file mtime before reads so that writes
+    from one Gunicorn worker are visible to all others.
+    """
 
     def __init__(self, storage_dir: Path) -> None:
         self._dir = storage_dir
         self._dir.mkdir(parents=True, exist_ok=True)
         self._tasks: dict[str, TaskRecord] = {}
         self._lock = Lock()
+        self._last_mtime: float = 0.0
         self._load()
 
     def create(self, filename: str, pdf_path: str) -> TaskRecord:
@@ -65,11 +70,13 @@ class TaskStore:
     def get(self, task_id: str) -> TaskRecord | None:
         """Return the task record for task_id, or None if not found."""
         with self._lock:
+            self._refresh_if_stale()
             return self._tasks.get(task_id)
 
     def update(self, task_id: str, **kwargs: object) -> None:
         """Update fields on an existing task record and persist."""
         with self._lock:
+            self._refresh_if_stale()
             record = self._tasks.get(task_id)
             if record is None:
                 return
@@ -81,6 +88,7 @@ class TaskStore:
     def list_all(self) -> list[TaskRecord]:
         """Return all task records sorted by creation time descending."""
         with self._lock:
+            self._refresh_if_stale()
             records = list(self._tasks.values())
         records.sort(key=lambda r: r.created_at, reverse=True)
         return records
@@ -88,6 +96,7 @@ class TaskStore:
     def delete(self, task_id: str) -> bool:
         """Delete a task record. Returns True if deleted, False if not found."""
         with self._lock:
+            self._refresh_if_stale()
             if task_id not in self._tasks:
                 return False
             del self._tasks[task_id]
@@ -196,6 +205,18 @@ class TaskStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _refresh_if_stale(self) -> None:
+        """Reload from disk if another worker has written a newer version."""
+        path = self._dir / _TASKS_FILE
+        if not path.exists():
+            return
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return
+        if mtime > self._last_mtime:
+            self._load()
+
     def _save(self) -> None:
         """Persist all tasks to disk as JSON. Must be called under lock."""
         path = self._dir / _TASKS_FILE
@@ -204,6 +225,7 @@ class TaskStore:
         try:
             tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp_path.replace(path)
+            self._last_mtime = path.stat().st_mtime
         except OSError:
             logger.warning("Failed to persist tasks to disk", exc_info=True)
 
@@ -221,21 +243,25 @@ class TaskStore:
             self._save()
 
     def _load(self) -> None:
-        """Load persisted tasks from disk. Called once during __init__."""
+        """Load persisted tasks from disk.
+
+        Called during ``__init__`` and whenever a stale mtime is detected
+        (i.e. another Gunicorn worker wrote to ``tasks.json``).
+        """
         path = self._dir / _TASKS_FILE
         if not path.exists():
             return
         try:
             data: dict[str, dict] = json.loads(path.read_text(encoding="utf-8"))
+            loaded: dict[str, TaskRecord] = {}
             for tid, raw in data.items():
-                # Backward compat: add queued_at if missing
                 if "queued_at" not in raw:
                     raw["queued_at"] = raw.get("created_at", "")
-                # Backward compat: migrate old 'pending' status to 'queued'
                 if raw.get("status") == "pending":
                     raw["status"] = "queued"
-                self._tasks[tid] = TaskRecord(**raw)
+                loaded[tid] = TaskRecord(**raw)
+            self._tasks = loaded
+            self._last_mtime = path.stat().st_mtime
             self._recover_stale_tasks()
         except (json.JSONDecodeError, TypeError, KeyError):
-            # Corrupted persistence — start fresh
             self._tasks = {}
