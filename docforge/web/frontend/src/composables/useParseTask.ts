@@ -1,4 +1,4 @@
-import { ref, onUnmounted, type Ref } from 'vue'
+import { ref, onUnmounted, getCurrentInstance, type Ref } from 'vue'
 import { getParseStatusUrl } from '@/api/client'
 import type { TaskStatus, SSEEventType } from '@/api/types'
 
@@ -55,9 +55,11 @@ export function useParseTask(
         if (data.completed_pages != null) completedPages.value = data.completed_pages as number
         if (data.page_markdowns && typeof data.page_markdowns === 'object') {
           const pages = data.page_markdowns as Record<string, string>
+          const next = new Map(pageMarkdowns.value)
           for (const [key, value] of Object.entries(pages)) {
-            pageMarkdowns.value.set(Number(key), value)
+            next.set(Number(key), value)
           }
+          pageMarkdowns.value = next
         }
         if (data.error_message) error.value = data.error_message as string
         break
@@ -92,8 +94,10 @@ export function useParseTask(
         const pageNum = Number(data.page_num)
         const markdown = String(data.markdown ?? '')
         if (!isNaN(pageNum) && markdown) {
-          pageMarkdowns.value.set(pageNum, markdown)
-          completedPages.value = pageMarkdowns.value.size
+          const next = new Map(pageMarkdowns.value)
+          next.set(pageNum, markdown)
+          pageMarkdowns.value = next
+          completedPages.value = next.size
           options.onPageResult?.(pageNum, markdown)
         }
         if (data.pct != null) pct.value = Number(data.pct)
@@ -152,17 +156,6 @@ export function useParseTask(
     isConnected.value = true
     retryCount = 0
 
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as Record<string, unknown>
-        const eventType = (data.event as SSEEventType) || 'progress'
-        handleEvent(eventType, data)
-      } catch {
-        // Ignore malformed events
-      }
-    }
-
-    // Handle named events (server may send event: <type>)
     const eventTypes: SSEEventType[] = [
       'catchup', 'profiling', 'strategy_report', 'noise_learning',
       'page_progress', 'page_result', 'table_merging', 'assembling',
@@ -179,6 +172,17 @@ export function useParseTask(
         }
       })
     }
+
+    // Fallback for unnamed SSE events (default type 'message')
+    eventSource.addEventListener('message', (event) => {
+      try {
+        const data = JSON.parse((event as MessageEvent).data) as Record<string, unknown>
+        const eventType = (data.event as SSEEventType) || 'progress'
+        handleEvent(eventType, data)
+      } catch {
+        // Ignore malformed events
+      }
+    })
 
     eventSource.onerror = () => {
       isConnected.value = false
@@ -214,9 +218,11 @@ export function useParseTask(
     isConnected.value = false
   }
 
-  onUnmounted(() => {
-    disconnect()
-  })
+  if (getCurrentInstance()) {
+    onUnmounted(() => {
+      disconnect()
+    })
+  }
 
   return {
     taskId,

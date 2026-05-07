@@ -34,6 +34,8 @@ watch(currentPage, (page) => {
   emit('page-change', page)
 })
 
+defineExpose({ goToPage })
+
 function onPageInput(e: Event) {
   const target = e.target as HTMLInputElement
   const num = parseInt(target.value, 10)

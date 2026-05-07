@@ -21,6 +21,7 @@ export const useHistoryStore = defineStore('history', () => {
 
   // Actions
   async function fetchHistory() {
+    if (isLoading.value) return
     isLoading.value = true
     error.value = null
 

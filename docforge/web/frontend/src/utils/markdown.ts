@@ -1,27 +1,19 @@
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
-// Configure marked for GFM with breaks
 marked.setOptions({
   gfm: true,
   breaks: true,
 })
 
-/**
- * Render markdown string to HTML.
- */
 export function renderMarkdown(md: string): string {
   try {
-    return marked(md) as string
+    return DOMPurify.sanitize(marked(md) as string)
   } catch {
     return '<p>렌더링 오류</p>'
   }
 }
 
-/**
- * Strip YAML frontmatter from markdown.
- * Removes `---` delimited block at the start of the document.
- * Also converts `---` page separators to HTML comment separators.
- */
 export function stripFrontMatter(md: string): string {
   if (!md.startsWith('---')) return md
 

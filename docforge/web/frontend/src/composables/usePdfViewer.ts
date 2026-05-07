@@ -29,6 +29,7 @@ export function usePdfViewer(options: UsePdfViewerOptions) {
   let pdfDocument: pdfjsLib.PDFDocumentProxy | null = null
   const canvasElements: HTMLCanvasElement[] = []
   let observer: IntersectionObserver | null = null
+  let renderCancelled = false
 
   async function loadDocument(source: string | ArrayBuffer) {
     cleanup()
@@ -47,14 +48,19 @@ export function usePdfViewer(options: UsePdfViewerOptions) {
     }
   }
 
+  const RENDER_CHUNK = 3
+
   async function renderAllPages() {
     if (!pdfDocument || !containerRef.value) return
+    renderCancelled = false
 
     const container = containerRef.value
     clearContainer(container)
     canvasElements.length = 0
 
     for (let i = 1; i <= pdfDocument.numPages; i++) {
+      if (renderCancelled) return
+
       const page = await pdfDocument.getPage(i)
       const viewport = page.getViewport({ scale })
 
@@ -70,11 +76,19 @@ export function usePdfViewer(options: UsePdfViewerOptions) {
         await page.render({ canvasContext: ctx, viewport }).promise
       }
 
+      if (renderCancelled) return
+
       container.appendChild(canvas)
       canvasElements.push(canvas)
+
+      if (i % RENDER_CHUNK === 0) {
+        await new Promise((r) => setTimeout(r, 0))
+      }
     }
 
-    setupIntersectionObserver()
+    if (!renderCancelled) {
+      setupIntersectionObserver()
+    }
   }
 
   function setupIntersectionObserver() {
@@ -130,6 +144,7 @@ export function usePdfViewer(options: UsePdfViewerOptions) {
   }
 
   function cleanup() {
+    renderCancelled = true
     if (observer) {
       observer.disconnect()
       observer = null

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { getParseResult } from '@/api/client'
+import BaseAlert from '@/components/common/BaseAlert.vue'
 import { useHistoryStore } from '@/stores/history'
 import CompareToolbar from '@/components/compare/CompareToolbar.vue'
 import PdfComparePanel from '@/components/compare/PdfComparePanel.vue'
@@ -25,6 +26,7 @@ const mdDiffPanel = ref<InstanceType<typeof MdDiffPanel> | null>(null)
 // History task selection
 const selectedTaskId = ref('')
 const isLoadingTask = ref(false)
+const loadError = ref<string | null>(null)
 
 const doneItems = computed((): HistoryItem[] => {
   return historyStore.items.filter((i) => i.status === 'done')
@@ -67,13 +69,14 @@ function onCompareMdLoaded(content: string) {
 async function onHistorySelect() {
   if (!selectedTaskId.value) return
   isLoadingTask.value = true
+  loadError.value = null
 
   try {
     const result = await getParseResult(selectedTaskId.value)
     baseMd.value = result.markdown ?? ''
     baseMdLabel.value = result.filename ?? '이력에서 로드'
-  } catch {
-    // silent
+  } catch (e) {
+    loadError.value = e instanceof Error ? e.message : '이력을 불러올 수 없습니다.'
   } finally {
     isLoadingTask.value = false
   }
@@ -84,6 +87,10 @@ async function onHistorySelect() {
   <div>
     <h1 class="page-title">비교 도구</h1>
     <p class="page-subtitle">PDF와 마크다운, 또는 마크다운끼리 비교합니다.</p>
+
+    <BaseAlert v-if="loadError" variant="error" dismissible @dismiss="loadError = null">
+      {{ loadError }}
+    </BaseAlert>
 
     <div class="card">
       <CompareToolbar :mode="mode" @update:mode="mode = $event">

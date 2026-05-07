@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { getParseResult, getExportUrl, getUploadUrl } from '@/api/client'
+import { getParseResult, getExportUrl, getUploadUrl, ApiClientError } from '@/api/client'
 import { useParseTask } from '@/composables/useParseTask'
+import { stripFrontMatter } from '@/utils/markdown'
 import type { ParseResult } from '@/api/types'
 import PdfPanel from '@/components/verify/PdfPanel.vue'
 import MarkdownPanel from '@/components/verify/MarkdownPanel.vue'
@@ -22,14 +23,13 @@ const pdfUrl = ref<string | null>(null)
 const markdown = ref('')
 const isLiveMode = ref(false)
 
-// PDF panel reference for scroll sync
 const pdfPanelRef = ref<InstanceType<typeof PdfPanel> | null>(null)
 
-// Live mode SSE composable
+let liveAttempted = false
+
 const liveTask = useParseTask(taskId, {
   onDone() {
     isLiveMode.value = false
-    // Reload full result
     loadResult()
   },
   onError(message) {
@@ -60,12 +60,13 @@ async function loadResult() {
       }
     }
   } catch (e) {
-    // Check if it's a NOT_READY error — enter live mode
-    const errMsg = e instanceof Error ? e.message : ''
-    if (errMsg.includes('NOT_READY') || errMsg.includes('404') || errMsg.includes('not found')) {
+    const isNotReady = e instanceof ApiClientError && (e.status === 404 || e.code === 'NOT_READY')
+    if (isNotReady && !liveAttempted) {
       enterLiveMode()
+    } else if (isNotReady) {
+      error.value = '결과가 아직 준비되지 않았습니다. 페이지를 새로고침하세요.'
     } else {
-      error.value = errMsg || '결과를 불러올 수 없습니다.'
+      error.value = e instanceof Error ? e.message : '결과를 불러올 수 없습니다.'
     }
   } finally {
     isLoading.value = false
@@ -73,25 +74,15 @@ async function loadResult() {
 }
 
 function enterLiveMode() {
+  if (liveAttempted) return
+  liveAttempted = true
   isLiveMode.value = true
   isLoading.value = false
   liveTask.connect()
 }
 
-function stripFrontMatter(md: string): string {
-  if (!md.startsWith('---')) return md
-  const endIdx = md.indexOf('\n---', 3)
-  if (endIdx < 0) return md
-  let cleaned = md.slice(endIdx + 4).replace(/^\n+/, '')
-  cleaned = cleaned.replace(/\n---\n/g, '\n<!-- pagebreak -->\n')
-  return cleaned
-}
-
 function onScrollToPage(page: number) {
-  pdfPanelRef.value
-  // Direct PDF scroll via goToPage is handled by the PdfPanel through events
-  // In this simple version, we rely on the user scrolling manually in PDF
-  void page
+  pdfPanelRef.value?.goToPage(page)
 }
 </script>
 

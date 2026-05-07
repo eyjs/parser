@@ -36,8 +36,10 @@ class MockEventSource {
 
   emitMessage(data: Record<string, unknown>) {
     const event = { data: JSON.stringify(data) } as MessageEvent
-    if (this.onmessage) {
-      this.onmessage(event)
+    if (this.listeners['message']) {
+      for (const handler of this.listeners['message']) {
+        handler(event)
+      }
     }
   }
 
