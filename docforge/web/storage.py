@@ -207,6 +207,19 @@ class TaskStore:
         except OSError:
             logger.warning("Failed to persist tasks to disk", exc_info=True)
 
+    def _recover_stale_tasks(self) -> None:
+        """Mark orphaned running/queued tasks as error after restart."""
+        dirty = False
+        for record in self._tasks.values():
+            if record.status in ("running", "queued"):
+                record.status = "error"
+                record.error = "서버 재시작으로 중단됨"
+                record.completed_at = datetime.now(KST).isoformat()
+                dirty = True
+                logger.info("Recovered stale task %s (%s)", record.task_id, record.filename)
+        if dirty:
+            self._save()
+
     def _load(self) -> None:
         """Load persisted tasks from disk. Called once during __init__."""
         path = self._dir / _TASKS_FILE
@@ -222,6 +235,7 @@ class TaskStore:
                 if raw.get("status") == "pending":
                     raw["status"] = "queued"
                 self._tasks[tid] = TaskRecord(**raw)
+            self._recover_stale_tasks()
         except (json.JSONDecodeError, TypeError, KeyError):
             # Corrupted persistence — start fresh
             self._tasks = {}
