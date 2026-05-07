@@ -57,7 +57,11 @@ async function request<T>(
     return undefined as unknown as T
   }
 
-  return response.json()
+  const body = await response.json()
+  if (body && typeof body === 'object' && 'data' in body) {
+    return body.data as T
+  }
+  return body as T
 }
 
 // Parse endpoints

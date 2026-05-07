@@ -30,7 +30,7 @@ export function useQueueStatus(options: UseQueueStatusOptions = {}) {
       const data: QueueStatus = await fetchFn()
       running.value = data.running
       queued.value = data.queued
-      maxWorkers.value = data.max_workers
+      maxWorkers.value = data.workers
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Queue status fetch failed'
     } finally {

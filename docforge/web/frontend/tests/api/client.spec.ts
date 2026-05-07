@@ -31,7 +31,7 @@ function jsonResponse(data: unknown, status = 200) {
   return Promise.resolve({
     ok: status >= 200 && status < 300,
     status,
-    json: () => Promise.resolve(data),
+    json: () => Promise.resolve({ success: true, data }),
   })
 }
 
@@ -148,12 +148,12 @@ describe('API Client', () => {
       mockFetch.mockReturnValueOnce(jsonResponse({
         running: 1,
         queued: 2,
-        max_workers: 4,
+        workers: 4,
       }))
 
       const result = await getQueueStatus()
       expect(result.running).toBe(1)
-      expect(result.max_workers).toBe(4)
+      expect(result.workers).toBe(4)
     })
   })
 

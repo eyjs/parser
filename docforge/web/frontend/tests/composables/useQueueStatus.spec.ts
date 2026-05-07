@@ -17,7 +17,7 @@ beforeEach(() => {
   mockFetchFn.mockResolvedValue({
     running: 2,
     queued: 3,
-    max_workers: 4,
+    workers: 4,
   })
 })
 
@@ -89,7 +89,7 @@ describe('useQueueStatus', () => {
     mockFetchFn.mockResolvedValueOnce({
       running: 1,
       queued: 0,
-      max_workers: 4,
+      workers: 4,
     })
 
     await vi.advanceTimersByTimeAsync(1000)

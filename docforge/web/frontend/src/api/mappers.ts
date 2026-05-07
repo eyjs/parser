@@ -44,7 +44,7 @@ export function toQueueInfo(dto: QueueStatus): QueueInfo {
   return {
     running: dto.running,
     queued: dto.queued,
-    maxWorkers: dto.max_workers,
+    maxWorkers: dto.workers,
   }
 }
 

@@ -70,7 +70,7 @@ export interface HistoryItem {
 export interface QueueStatus {
   running: number
   queued: number
-  max_workers: number
+  workers: number
 }
 
 // Version
