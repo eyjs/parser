@@ -1,0 +1,99 @@
+/* Typography -- migrated from static/css/main.css */
+
+.page-title {
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text);
+  margin-bottom: var(--space-2);
+}
+
+.page-subtitle {
+  font-size: var(--font-size-base);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-8);
+}
+
+.section-title {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: var(--space-4);
+}
+
+/* Markdown preview typography */
+
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3,
+.markdown-preview h4 {
+  font-weight: var(--font-weight-bold);
+  margin-top: var(--space-6);
+  margin-bottom: var(--space-3);
+  line-height: var(--line-height-tight);
+}
+
+.markdown-preview h1 { font-size: var(--font-size-2xl); }
+.markdown-preview h2 { font-size: var(--font-size-xl); }
+.markdown-preview h3 { font-size: var(--font-size-lg); }
+
+.markdown-preview p {
+  margin-bottom: var(--space-4);
+}
+
+.markdown-preview table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: var(--space-4);
+  font-size: var(--font-size-sm);
+}
+
+.markdown-preview th,
+.markdown-preview td {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  text-align: left;
+}
+
+.markdown-preview th {
+  background-color: var(--color-surface-alt);
+  font-weight: var(--font-weight-semibold);
+}
+
+.markdown-preview code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background-color: var(--color-surface-alt);
+  padding: 0.1em 0.3em;
+  border-radius: var(--radius-sm);
+}
+
+.markdown-preview pre {
+  background-color: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  overflow-x: auto;
+  margin-bottom: var(--space-4);
+}
+
+.markdown-preview pre code {
+  background: none;
+  padding: 0;
+  font-size: var(--font-size-sm);
+}
+
+.markdown-preview ul,
+.markdown-preview ol {
+  padding-left: var(--space-6);
+  margin-bottom: var(--space-4);
+}
+
+.markdown-preview li {
+  margin-bottom: var(--space-1);
+}
+
+.markdown-preview blockquote {
+  border-left: 4px solid var(--color-border);
+  padding-left: var(--space-4);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-4);
+}

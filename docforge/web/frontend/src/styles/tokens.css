@@ -1,0 +1,82 @@
+/* DocForge Design Tokens -- migrated from static/css/main.css */
+
+:root {
+  /* Color palette */
+  --color-bg: #f8f9fa;
+  --color-surface: #ffffff;
+  --color-surface-alt: #f1f3f5;
+  --color-border: #dee2e6;
+  --color-border-focus: #4c6ef5;
+
+  --color-primary: #4c6ef5;
+  --color-primary-hover: #3b5bdb;
+  --color-primary-text: #ffffff;
+
+  --color-success: #2f9e44;
+  --color-success-bg: #ebfbee;
+  --color-warning: #e67700;
+  --color-warning-bg: #fff9db;
+  --color-error: #c92a2a;
+  --color-error-bg: #fff5f5;
+
+  --color-text: #212529;
+  --color-text-muted: #6c757d;
+  --color-text-light: #adb5bd;
+
+  --color-progress-track: #e9ecef;
+  --color-progress-fill: #4c6ef5;
+
+  /* Typography */
+  --font-sans: "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "D2Coding", "Fira Code", ui-monospace, monospace;
+
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-base: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.25rem;
+  --font-size-2xl: 1.5rem;
+  --font-size-3xl: 1.875rem;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+
+  /* Spacing */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* Border */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-full: 9999px;
+
+  /* Shadow */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07), 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1), 0 4px 6px rgba(0, 0, 0, 0.05);
+
+  /* Transition */
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+
+  /* Layout */
+  --content-max-width: 1200px;
+  --sidebar-width: 320px;
+  --header-height: 60px;
+}
