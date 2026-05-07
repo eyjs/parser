@@ -16,6 +16,7 @@ export interface ParseTaskState {
 }
 
 export interface UseParseTaskOptions {
+  getStatusUrl?: (taskId: string) => string
   onPageResult?: (page: number, markdown: string) => void
   onStageChange?: (stage: string) => void
   onDone?: () => void
@@ -151,7 +152,7 @@ export function useParseTask(
       eventSource.close()
     }
 
-    const url = getParseStatusUrl(taskId)
+    const url = (options.getStatusUrl ?? getParseStatusUrl)(taskId)
     eventSource = new EventSource(url)
     isConnected.value = true
     retryCount = 0

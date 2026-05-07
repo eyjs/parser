@@ -4,7 +4,17 @@ import type { QueueStatus } from '@/api/types'
 
 const DEFAULT_INTERVAL_MS = 5000
 
-export function useQueueStatus(intervalMs = DEFAULT_INTERVAL_MS) {
+export interface UseQueueStatusOptions {
+  fetchFn?: () => Promise<QueueStatus>
+  intervalMs?: number
+}
+
+export function useQueueStatus(options: UseQueueStatusOptions = {}) {
+  const {
+    fetchFn = getQueueStatus,
+    intervalMs = DEFAULT_INTERVAL_MS,
+  } = options
+
   const running = ref(0)
   const queued = ref(0)
   const maxWorkers = ref(0)
@@ -17,7 +27,7 @@ export function useQueueStatus(intervalMs = DEFAULT_INTERVAL_MS) {
     try {
       isLoading.value = true
       error.value = null
-      const data: QueueStatus = await getQueueStatus()
+      const data: QueueStatus = await fetchFn()
       running.value = data.running
       queued.value = data.queued
       maxWorkers.value = data.max_workers

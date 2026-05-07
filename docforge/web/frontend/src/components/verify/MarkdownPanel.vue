@@ -1,14 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { saveMarkdown } from '@/api/client'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
+import { renderMarkdown } from '@/utils/markdown'
 
 interface Props {
-  taskId: string
   initialMarkdown: string
   isLiveMode?: boolean
   livePageMarkdowns?: Map<number, string>
+  saveFn?: (markdown: string) => Promise<void>
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -26,11 +24,11 @@ const markdown = ref(props.initialMarkdown)
 const previewMode = ref(false)
 const isSaving = ref(false)
 const saveSuccess = ref(false)
+const saveError = ref<string | null>(null)
 const charCount = computed(() => markdown.value.length)
 
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
 
-// Sync initial markdown when it changes (e.g., result loaded)
 watch(
   () => props.initialMarkdown,
   (val) => {
@@ -40,7 +38,6 @@ watch(
   },
 )
 
-// In live mode, rebuild markdown from page map
 watch(
   () => props.livePageMarkdowns,
   (pages) => {
@@ -51,15 +48,7 @@ watch(
   { deep: true },
 )
 
-const saveError = ref<string | null>(null)
-
-const renderedHtml = computed(() => {
-  try {
-    return DOMPurify.sanitize(marked(markdown.value) as string)
-  } catch {
-    return '<p>렌더링 오류</p>'
-  }
-})
+const renderedHtml = computed(() => renderMarkdown(markdown.value))
 
 function togglePreview() {
   previewMode.value = !previewMode.value
@@ -69,7 +58,6 @@ function onInput(e: Event) {
   const target = e.target as HTMLTextAreaElement
   markdown.value = target.value
 
-  // Debounced preview update
   if (previewMode.value) {
     if (autoSaveTimer) clearTimeout(autoSaveTimer)
     autoSaveTimer = setTimeout(() => {
@@ -79,21 +67,18 @@ function onInput(e: Event) {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  // Tab key inserts spaces
   if (e.key === 'Tab') {
     e.preventDefault()
     const target = e.target as HTMLTextAreaElement
     const start = target.selectionStart
     const end = target.selectionEnd
     markdown.value = markdown.value.slice(0, start) + '  ' + markdown.value.slice(end)
-    // Restore cursor position after Vue re-renders
     requestAnimationFrame(() => {
       target.selectionStart = start + 2
       target.selectionEnd = start + 2
     })
   }
 
-  // Ctrl/Cmd + S saves
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault()
     onSave()
@@ -101,12 +86,12 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 async function onSave() {
-  if (isSaving.value) return
+  if (isSaving.value || !props.saveFn) return
   isSaving.value = true
   saveSuccess.value = false
 
   try {
-    await saveMarkdown(props.taskId, markdown.value)
+    await props.saveFn(markdown.value)
     saveSuccess.value = true
     saveError.value = null
     setTimeout(() => { saveSuccess.value = false }, 2000)
@@ -160,6 +145,7 @@ onUnmounted(() => {
           {{ previewMode ? '편집' : '미리보기' }}
         </button>
         <button
+          v-if="saveFn"
           class="btn btn--primary btn--sm"
           :disabled="isSaving"
           @click="onSave"

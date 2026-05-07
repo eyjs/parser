@@ -1,10 +1,19 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { getParseResult, getExportUrl, getUploadUrl, ApiClientError } from '@/api/client'
+import {
+  getParseResult,
+  getExportUrl,
+  getUploadUrl,
+  getVersions,
+  getDiff,
+  saveMarkdown,
+  ApiClientError,
+} from '@/api/client'
+import { toParseResultData, toVersionInfo, toVersionDiff } from '@/api/mappers'
 import { useParseTask } from '@/composables/useParseTask'
 import { stripFrontMatter } from '@/utils/markdown'
-import type { ParseResult } from '@/api/types'
+import type { ParseResultData, VersionInfo, VersionDiff } from '@/domain/types'
 import PdfPanel from '@/components/verify/PdfPanel.vue'
 import MarkdownPanel from '@/components/verify/MarkdownPanel.vue'
 import VersionList from '@/components/verify/VersionList.vue'
@@ -18,10 +27,15 @@ const taskId = route.params.taskId as string
 
 const isLoading = ref(true)
 const error = ref<string | null>(null)
-const result = ref<ParseResult | null>(null)
+const result = ref<ParseResultData | null>(null)
 const pdfUrl = ref<string | null>(null)
 const markdown = ref('')
 const isLiveMode = ref(false)
+
+// Version state (orchestrated here, not in VersionList)
+const versions = ref<VersionInfo[]>([])
+const versionsLoading = ref(false)
+const versionDiff = ref<VersionDiff | null>(null)
 
 const pdfPanelRef = ref<InstanceType<typeof PdfPanel> | null>(null)
 
@@ -47,18 +61,20 @@ async function loadResult() {
   error.value = null
 
   try {
-    const data = await getParseResult(taskId)
+    const data = toParseResultData(await getParseResult(taskId))
     result.value = data
     markdown.value = stripFrontMatter(data.markdown ?? '')
 
-    if (data.pdf_path) {
-      const parts = data.pdf_path.replace(/\\/g, '/').split('/')
+    if (data.pdfPath) {
+      const parts = data.pdfPath.replace(/\\/g, '/').split('/')
       const taskIdx = parts.indexOf(taskId)
       if (taskIdx >= 0) {
         const relative = parts.slice(taskIdx).join('/')
         pdfUrl.value = getUploadUrl(relative)
       }
     }
+
+    loadVersions()
   } catch (e) {
     const isNotReady = e instanceof ApiClientError && (e.status === 404 || e.code === 'NOT_READY')
     if (isNotReady && !liveAttempted) {
@@ -71,6 +87,29 @@ async function loadResult() {
   } finally {
     isLoading.value = false
   }
+}
+
+async function loadVersions() {
+  versionsLoading.value = true
+  try {
+    versions.value = (await getVersions(taskId)).map(toVersionInfo)
+  } catch {
+    // Version list is non-critical; leave empty
+  } finally {
+    versionsLoading.value = false
+  }
+}
+
+async function onVersionCompare(v1: string, v2: string) {
+  try {
+    versionDiff.value = toVersionDiff(await getDiff(taskId, v1, v2))
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '버전 비교에 실패했습니다.'
+  }
+}
+
+async function onSaveMarkdown(md: string) {
+  await saveMarkdown(taskId, md)
 }
 
 function enterLiveMode() {
@@ -131,7 +170,7 @@ function onScrollToPage(page: number) {
       v-if="result && result.stats"
       :stats="result.stats"
       :filename="result.filename"
-      :completed-at="result.completed_at"
+      :completed-at="result.completedAt"
     />
 
     <!-- Compare editor layout -->
@@ -144,10 +183,10 @@ function onScrollToPage(page: number) {
         :pdf-url="pdfUrl"
       />
       <MarkdownPanel
-        :task-id="taskId"
         :initial-markdown="markdown"
         :is-live-mode="isLiveMode"
         :live-page-markdowns="liveTask.pageMarkdowns.value"
+        :save-fn="onSaveMarkdown"
         @scroll-to-page="onScrollToPage"
       />
     </div>
@@ -155,8 +194,11 @@ function onScrollToPage(page: number) {
     <!-- Version list -->
     <VersionList
       v-if="result"
-      :task-id="taskId"
+      :versions="versions"
+      :is-loading="versionsLoading"
+      :diff-result="versionDiff"
       style="margin-top: var(--space-4);"
+      @compare="onVersionCompare"
     />
   </div>
 </template>

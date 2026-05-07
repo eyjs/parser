@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatDate } from '@/utils/format'
 
 interface Props {
   stats: Record<string, unknown>
@@ -6,7 +7,7 @@ interface Props {
   completedAt?: string
 }
 
-const props = withDefaults(defineProps<Props>(), {
+withDefaults(defineProps<Props>(), {
   completedAt: '',
 })
 
@@ -14,15 +15,6 @@ function formatValue(value: unknown): string {
   if (value == null) return '-'
   if (typeof value === 'number') return value.toLocaleString('ko-KR')
   return String(value)
-}
-
-function formatDate(dateStr: string): string {
-  if (!dateStr) return '-'
-  try {
-    return new Date(dateStr).toLocaleString('ko-KR')
-  } catch {
-    return dateStr
-  }
 }
 </script>
 

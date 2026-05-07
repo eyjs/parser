@@ -1,8 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { nextTick } from 'vue'
 import { useParseTask } from '@/composables/useParseTask'
 
-// Mock EventSource
 class MockEventSource {
   url: string
   listeners: Record<string, ((e: MessageEvent) => void)[]> = {}
@@ -24,7 +22,6 @@ class MockEventSource {
     this.readyState = 2
   }
 
-  // Test helpers
   emit(type: string, data: Record<string, unknown>) {
     const event = { data: JSON.stringify(data) } as MessageEvent
     if (this.listeners[type]) {
@@ -53,15 +50,6 @@ class MockEventSource {
     return MockEventSource.instances[MockEventSource.instances.length - 1]
   }
 }
-
-// Mock onUnmounted (not in a component context during tests)
-vi.mock('vue', async () => {
-  const actual = await vi.importActual('vue')
-  return {
-    ...actual,
-    onUnmounted: vi.fn(),
-  }
-})
 
 beforeEach(() => {
   MockEventSource.clear()
@@ -94,6 +82,16 @@ describe('useParseTask', () => {
     expect(es).toBeDefined()
     expect(es!.url).toContain('/api/parse/task-123/status')
     expect(task.isConnected.value).toBe(true)
+  })
+
+  it('uses injected getStatusUrl when provided', () => {
+    const customUrl = vi.fn((id: string) => `/custom/${id}/stream`)
+    const task = useParseTask('task-456', { getStatusUrl: customUrl })
+    task.connect()
+
+    const es = MockEventSource.latest()
+    expect(customUrl).toHaveBeenCalledWith('task-456')
+    expect(es!.url).toBe('/custom/task-456/stream')
   })
 
   it('handles catchup event', () => {
@@ -148,7 +146,7 @@ describe('useParseTask', () => {
     expect(task.pct.value).toBe(100)
     expect(task.currentStage.value).toBe('done')
     expect(onDone).toHaveBeenCalled()
-    expect(es.readyState).toBe(2) // closed
+    expect(es.readyState).toBe(2)
   })
 
   it('handles error event', () => {
@@ -205,7 +203,6 @@ describe('useParseTask', () => {
 
     expect(task.isConnected.value).toBe(false)
 
-    // After retry delay, should reconnect
     vi.advanceTimersByTime(3000)
 
     expect(MockEventSource.instances.length).toBe(2)
@@ -220,12 +217,9 @@ describe('useParseTask', () => {
     const es = MockEventSource.latest()!
     es.emit('done', {})
 
-    // Now trigger an error after done
     const instances = MockEventSource.instances.length
-    // The connection was already closed by done handler
 
     vi.advanceTimersByTime(3000)
-    // Should not have created a new EventSource
     expect(MockEventSource.instances.length).toBe(instances)
     vi.useRealTimers()
   })

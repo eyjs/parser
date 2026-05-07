@@ -1,50 +1,46 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { getVersions, getDiff } from '@/api/client'
-import type { Version, DiffResult } from '@/api/types'
+import { ref, watch } from 'vue'
+import type { VersionInfo, VersionDiff } from '@/domain/types'
+import { formatFileSize } from '@/utils/format'
 import BaseButton from '@/components/common/BaseButton.vue'
 
 interface Props {
-  taskId: string
+  versions: VersionInfo[]
+  isLoading?: boolean
+  diffResult?: VersionDiff | null
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  isLoading: false,
+  diffResult: null,
+})
 
-const versions = ref<Version[]>([])
-const isLoading = ref(false)
-const diffResult = ref<DiffResult | null>(null)
+const emit = defineEmits<{
+  compare: [v1: string, v2: string]
+}>()
+
 const selectedV1 = ref('')
 const selectedV2 = ref('')
 const showDiff = ref(false)
 
-onMounted(async () => {
-  isLoading.value = true
-  try {
-    versions.value = await getVersions(props.taskId)
-    if (versions.value.length >= 2) {
-      selectedV1.value = versions.value[0].name
-      selectedV2.value = versions.value[1].name
+watch(
+  () => props.versions,
+  (vs) => {
+    if (vs.length >= 2) {
+      selectedV1.value = vs[0].name
+      selectedV2.value = vs[1].name
     }
-  } catch {
-    // silent
-  } finally {
-    isLoading.value = false
-  }
+  },
+  { immediate: true },
+)
+
+watch(() => props.diffResult, (result) => {
+  if (result) showDiff.value = true
 })
 
-async function onCompare() {
+function onCompare() {
   if (!selectedV1.value || !selectedV2.value) return
-  try {
-    diffResult.value = await getDiff(props.taskId, selectedV1.value, selectedV2.value)
-    showDiff.value = true
-  } catch {
-    // silent
-  }
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  return `${(bytes / 1024).toFixed(1)} KB`
+  emit('compare', selectedV1.value, selectedV2.value)
 }
 </script>
 
@@ -62,7 +58,7 @@ function formatSize(bytes: number): string {
       <ul class="version-list__items">
         <li v-for="v in versions" :key="v.name" class="version-list__item">
           <span>{{ v.name }}</span>
-          <span class="text-muted text-sm">{{ formatSize(v.size) }}</span>
+          <span class="text-muted text-sm">{{ formatFileSize(v.size) }}</span>
         </li>
       </ul>
 
@@ -84,7 +80,7 @@ function formatSize(bytes: number): string {
       </div>
 
       <div v-if="showDiff && diffResult" class="version-list__diff">
-        <p v-if="!diffResult.has_changes" class="text-muted text-sm">변경 사항 없음</p>
+        <p v-if="!diffResult.hasChanges" class="text-muted text-sm">변경 사항 없음</p>
         <pre v-else class="diff-view">{{ diffResult.diff }}</pre>
       </div>
     </template>

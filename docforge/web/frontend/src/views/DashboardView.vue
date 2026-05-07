@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { uploadFiles } from '@/api/client'
 import { useParseTask } from '@/composables/useParseTask'
 import { useParseStore } from '@/stores/parse'
-import { useHistoryStore } from '@/stores/history'
+import { useHistory } from '@/composables/useHistory'
 import DropZone from '@/components/dashboard/DropZone.vue'
 import QueueBanner from '@/components/dashboard/QueueBanner.vue'
 import LivePreview from '@/components/dashboard/LivePreview.vue'
@@ -15,7 +15,7 @@ type ParseTaskReturn = ReturnType<typeof useParseTask>
 
 const router = useRouter()
 const parseStore = useParseStore()
-const historyStore = useHistoryStore()
+const history = useHistory()
 
 const uploadError = ref<string | null>(null)
 const activeParseTasks = shallowRef<Map<string, ParseTaskReturn>>(new Map())
@@ -26,7 +26,6 @@ onUnmounted(() => {
   }
 })
 
-// Most recent active task for live preview display
 const primaryTask = computed<ParseTaskReturn | null>(() => {
   const tasks = Array.from(activeParseTasks.value.values())
   return tasks.length > 0 ? tasks[tasks.length - 1] : null
@@ -57,9 +56,8 @@ async function onFilesSelected(files: File[]) {
         },
         onDone() {
           parseStore.updateTask(taskId, { status: 'done', pct: 100 })
-          historyStore.fetchHistory()
+          history.fetchHistory()
 
-          // Single file upload: navigate to verify page
           if (taskIds.length === 1) {
             setTimeout(() => {
               router.push(`/verify/${taskId}`)
@@ -68,7 +66,7 @@ async function onFilesSelected(files: File[]) {
         },
         onError(message) {
           parseStore.updateTask(taskId, { status: 'error', error: message })
-          historyStore.fetchHistory()
+          history.fetchHistory()
         },
         onStageChange(stage) {
           parseStore.updateTask(taskId, { currentStage: stage })

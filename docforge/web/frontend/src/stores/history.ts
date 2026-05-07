@@ -1,14 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { getHistory, deleteHistory } from '@/api/client'
-import type { HistoryItem } from '@/api/types'
+import type { HistoryEntry } from '@/domain/types'
 
 export const useHistoryStore = defineStore('history', () => {
-  const items = ref<HistoryItem[]>([])
+  const items = ref<HistoryEntry[]>([])
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 
-  // Getters
   const doneItems = computed(() =>
     items.value.filter((item) => item.status === 'done'),
   )
@@ -19,44 +17,33 @@ export const useHistoryStore = defineStore('history', () => {
 
   const isEmpty = computed(() => items.value.length === 0)
 
-  // Actions
-  async function fetchHistory() {
-    if (isLoading.value) return
-    isLoading.value = true
-    error.value = null
-
-    try {
-      const data = await getHistory()
-      items.value = data
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to fetch history'
-    } finally {
-      isLoading.value = false
-    }
+  function setItems(entries: HistoryEntry[]) {
+    items.value = entries
   }
 
-  async function deleteItem(taskId: string) {
-    try {
-      await deleteHistory(taskId)
-      items.value = items.value.filter((item) => item.task_id !== taskId)
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to delete item'
-      throw e
-    }
+  function setLoading(loading: boolean) {
+    isLoading.value = loading
   }
 
-  function addItem(item: HistoryItem) {
-    // Prepend to maintain newest-first order
+  function setError(err: string | null) {
+    error.value = err
+  }
+
+  function removeItem(taskId: string) {
+    items.value = items.value.filter((item) => item.taskId !== taskId)
+  }
+
+  function addItem(item: HistoryEntry) {
     items.value = [item, ...items.value]
   }
 
   function updateItemStatus(taskId: string, status: string, pct?: number) {
     items.value = items.value.map((item) => {
-      if (item.task_id !== taskId) return item
+      if (item.taskId !== taskId) return item
       return {
         ...item,
         status,
-        progress_pct: pct ?? item.progress_pct,
+        progressPct: pct ?? item.progressPct,
       }
     })
   }
@@ -68,8 +55,10 @@ export const useHistoryStore = defineStore('history', () => {
     doneItems,
     pendingItems,
     isEmpty,
-    fetchHistory,
-    deleteItem,
+    setItems,
+    setLoading,
+    setError,
+    removeItem,
     addItem,
     updateItemStatus,
   }

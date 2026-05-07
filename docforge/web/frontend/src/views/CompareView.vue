@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { getParseResult } from '@/api/client'
+import { toParseResultData } from '@/api/mappers'
 import BaseAlert from '@/components/common/BaseAlert.vue'
-import { useHistoryStore } from '@/stores/history'
+import { useHistory } from '@/composables/useHistory'
 import CompareToolbar from '@/components/compare/CompareToolbar.vue'
 import PdfComparePanel from '@/components/compare/PdfComparePanel.vue'
 import MdDiffPanel from '@/components/compare/MdDiffPanel.vue'
 import MdUploader from '@/components/compare/MdUploader.vue'
-import type { HistoryItem } from '@/api/types'
+import type { HistoryEntry } from '@/domain/types'
 
 type CompareMode = 'pdf-vs-md' | 'md-vs-md'
 
-const historyStore = useHistoryStore()
+const history = useHistory()
 const mode = ref<CompareMode>('md-vs-md')
 
 // PDF vs MD state
@@ -28,14 +29,12 @@ const selectedTaskId = ref('')
 const isLoadingTask = ref(false)
 const loadError = ref<string | null>(null)
 
-const doneItems = computed((): HistoryItem[] => {
-  return historyStore.items.filter((i) => i.status === 'done')
+const doneItems = computed((): HistoryEntry[] => {
+  return history.doneItems as HistoryEntry[]
 })
 
-// Load history on mount
-historyStore.fetchHistory()
+history.fetchHistory()
 
-// PDF file upload handler
 function onPdfFileSelected(e: Event) {
   const input = e.target as HTMLInputElement
   if (!input.files || input.files.length === 0) return
@@ -49,32 +48,28 @@ function onPdfFileSelected(e: Event) {
   input.value = ''
 }
 
-// MD file loaded (for PDF vs MD mode)
 function onPdfMdLoaded(content: string) {
   pdfMdContent.value = content
 }
 
-// Base MD file loaded (for MD vs MD mode)
 function onBaseMdLoaded(content: string, filename: string) {
   baseMd.value = content
   baseMdLabel.value = filename
 }
 
-// Compare MD file loaded (for MD vs MD mode)
 function onCompareMdLoaded(content: string) {
   mdDiffPanel.value?.setCompareText(content)
 }
 
-// Load from history
 async function onHistorySelect() {
   if (!selectedTaskId.value) return
   isLoadingTask.value = true
   loadError.value = null
 
   try {
-    const result = await getParseResult(selectedTaskId.value)
-    baseMd.value = result.markdown ?? ''
-    baseMdLabel.value = result.filename ?? '이력에서 로드'
+    const data = toParseResultData(await getParseResult(selectedTaskId.value))
+    baseMd.value = data.markdown ?? ''
+    baseMdLabel.value = data.filename ?? '이력에서 로드'
   } catch (e) {
     loadError.value = e instanceof Error ? e.message : '이력을 불러올 수 없습니다.'
   } finally {
@@ -102,7 +97,7 @@ async function onHistorySelect() {
             @change="onHistorySelect"
           >
             <option value="">이력에서 선택...</option>
-            <option v-for="item in doneItems" :key="item.task_id" :value="item.task_id">
+            <option v-for="item in doneItems" :key="item.taskId" :value="item.taskId">
               {{ item.filename }}
             </option>
           </select>

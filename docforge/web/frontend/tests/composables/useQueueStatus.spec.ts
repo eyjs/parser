@@ -1,10 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useQueueStatus } from '@/composables/useQueueStatus'
 
-vi.mock('@/api/client', () => ({
-  getQueueStatus: vi.fn(),
-}))
-
 vi.mock('vue', async () => {
   const actual = await vi.importActual('vue')
   return {
@@ -14,13 +10,11 @@ vi.mock('vue', async () => {
   }
 })
 
-import { getQueueStatus } from '@/api/client'
-
-const mockGetQueueStatus = vi.mocked(getQueueStatus)
+const mockFetchFn = vi.fn()
 
 beforeEach(() => {
   vi.useFakeTimers()
-  mockGetQueueStatus.mockResolvedValue({
+  mockFetchFn.mockResolvedValue({
     running: 2,
     queued: 3,
     max_workers: 4,
@@ -34,47 +28,47 @@ afterEach(() => {
 
 describe('useQueueStatus', () => {
   it('fetches status immediately on start', async () => {
-    const { running, queued, maxWorkers } = useQueueStatus()
+    const { running, queued, maxWorkers } = useQueueStatus({ fetchFn: mockFetchFn })
 
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(mockGetQueueStatus).toHaveBeenCalledTimes(1)
+    expect(mockFetchFn).toHaveBeenCalledTimes(1)
     expect(running.value).toBe(2)
     expect(queued.value).toBe(3)
     expect(maxWorkers.value).toBe(4)
   })
 
   it('polls at the specified interval', async () => {
-    const { stopPolling } = useQueueStatus(2000)
+    const { stopPolling } = useQueueStatus({ fetchFn: mockFetchFn, intervalMs: 2000 })
 
     await vi.advanceTimersByTimeAsync(0)
-    expect(mockGetQueueStatus).toHaveBeenCalledTimes(1)
+    expect(mockFetchFn).toHaveBeenCalledTimes(1)
 
     await vi.advanceTimersByTimeAsync(2000)
-    expect(mockGetQueueStatus).toHaveBeenCalledTimes(2)
+    expect(mockFetchFn).toHaveBeenCalledTimes(2)
 
     await vi.advanceTimersByTimeAsync(2000)
-    expect(mockGetQueueStatus).toHaveBeenCalledTimes(3)
+    expect(mockFetchFn).toHaveBeenCalledTimes(3)
 
     stopPolling()
   })
 
   it('stopPolling stops the interval', async () => {
-    const { stopPolling } = useQueueStatus(1000)
+    const { stopPolling } = useQueueStatus({ fetchFn: mockFetchFn, intervalMs: 1000 })
 
     await vi.advanceTimersByTimeAsync(0)
-    expect(mockGetQueueStatus).toHaveBeenCalledTimes(1)
+    expect(mockFetchFn).toHaveBeenCalledTimes(1)
 
     stopPolling()
 
     await vi.advanceTimersByTimeAsync(5000)
-    expect(mockGetQueueStatus).toHaveBeenCalledTimes(1)
+    expect(mockFetchFn).toHaveBeenCalledTimes(1)
   })
 
   it('handles fetch errors gracefully', async () => {
-    mockGetQueueStatus.mockRejectedValueOnce(new Error('Network error'))
+    mockFetchFn.mockRejectedValueOnce(new Error('Network error'))
 
-    const { error, running, stopPolling } = useQueueStatus()
+    const { error, running, stopPolling } = useQueueStatus({ fetchFn: mockFetchFn })
 
     await vi.advanceTimersByTimeAsync(0)
 
@@ -85,14 +79,14 @@ describe('useQueueStatus', () => {
   })
 
   it('clears error on successful fetch after failure', async () => {
-    mockGetQueueStatus.mockRejectedValueOnce(new Error('fail'))
+    mockFetchFn.mockRejectedValueOnce(new Error('fail'))
 
-    const { error, stopPolling } = useQueueStatus(1000)
+    const { error, stopPolling } = useQueueStatus({ fetchFn: mockFetchFn, intervalMs: 1000 })
 
     await vi.advanceTimersByTimeAsync(0)
     expect(error.value).toBe('fail')
 
-    mockGetQueueStatus.mockResolvedValueOnce({
+    mockFetchFn.mockResolvedValueOnce({
       running: 1,
       queued: 0,
       max_workers: 4,
