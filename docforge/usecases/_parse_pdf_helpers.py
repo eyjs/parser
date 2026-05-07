@@ -131,10 +131,10 @@ def build_layout_detector(config: ParserConfig):
 
 
 def build_llm_engine(config: ParserConfig) -> "VisionLLMEngine | None":
-    """Build a VLM engine using the fallback chain: local -> cloud.
+    """Build a VLM engine using the fallback chain: local -> host remote -> cloud.
 
     Respects ``config.vlm_provider``:
-      - ``"auto"``: try local Qwen2-VL, then cloud (OpenAI -> Anthropic)
+      - ``"auto"``: try local Qwen2-VL, then host remote, then cloud
       - ``"local"``: local only, None if unavailable
       - ``"openai"`` / ``"anthropic"``: cloud only with specified provider
     """
@@ -152,7 +152,13 @@ def build_llm_engine(config: ParserConfig) -> "VisionLLMEngine | None":
             logger.info("VLM disabled — local Qwen2-VL not available and provider=local")
             return None
 
-    # 2) Cloud VLM attempt
+    # 2) Host remote VLM (Docker → macOS host Qwen2-VL)
+    if provider == "auto":
+        engine = _try_host_vlm()
+        if engine is not None:
+            return engine
+
+    # 3) Cloud VLM attempt
     if provider in ("auto", "openai", "anthropic"):
         engine = _try_cloud_vlm(provider)
         if engine is not None:
@@ -174,6 +180,21 @@ def _try_local_vlm() -> "VisionLLMEngine | None":
         return None
     except Exception:
         logger.warning("Local VLM engine init failed", exc_info=True)
+        return None
+
+
+def _try_host_vlm() -> "VisionLLMEngine | None":
+    """Attempt to connect to a host VLM service (Docker → macOS host)."""
+    try:
+        from docforge.adapters.host_vlm_engine import HostVLMEngine
+        candidate = HostVLMEngine()
+        if candidate.is_available():
+            logger.info("VLM engine: host remote (Qwen2-VL via vlm_service)")
+            return candidate
+        logger.info("Host VLM service not available")
+        return None
+    except Exception:
+        logger.warning("Host VLM engine init failed", exc_info=True)
         return None
 
 
