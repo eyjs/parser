@@ -441,49 +441,58 @@ function subscribeToProgressMulti(taskId, cardId) {
   var es = new EventSource('/api/parse/' + taskId + '/status');
   ensureLivePreview(taskId);
 
-  es.addEventListener('message', function (e) {
-    var payload;
-    try { payload = JSON.parse(e.data); } catch (_) { return; }
+  function parseData(e) {
+    try { return JSON.parse(e.data); } catch (_) { return null; }
+  }
 
-    var event = payload.event;
-    var data = payload.data || {};
-
-    if (event === 'heartbeat') return;
-
-    var pct = typeof data.pct === 'number' ? data.pct : null;
-    var msg = data.message || '';
-
-    // Live preview hooks
-    if (event === 'page_progress' && typeof data.page === 'number') {
-      markPageActive(data.page, data.total || _livePreview.totalPages);
+  es.addEventListener('page_progress', function (e) {
+    var data = parseData(e);
+    if (!data) return;
+    if (typeof data.completed_pages === 'number') {
+      markPageActive(data.completed_pages, data.total_pages || _livePreview.totalPages);
       updateStagePill('page_progress');
-    } else if (event === 'page_result' && typeof data.page === 'number') {
-      markPageDone(data.page, data.total || _livePreview.totalPages, data.markdown || '');
-    } else if (event === 'profiling' || event === 'noise_learning'
-            || event === 'table_merging' || event === 'assembling') {
-      updateStagePill(event);
     }
-
-    if (event === 'done') {
-      es.close();
-      finalizeLivePreview();
-      updateUploadCard(cardId, 'done', '완료', taskId);
-      delete _activeUploads[taskId];
-      loadHistory();
-      return;
-    }
-
-    if (event === 'error') {
-      es.close();
-      updateUploadCard(cardId, 'error', msg || '오류');
-      delete _activeUploads[taskId];
-      loadHistory();
-      return;
-    }
-
+    var pct = typeof data.pct === 'number' ? data.pct : null;
     if (pct !== null) {
-      updateUploadCard(cardId, 'running', pct + '% - ' + msg, taskId);
+      updateUploadCard(cardId, 'running', pct + '% - ' + (data.message || ''), taskId);
     }
+  });
+
+  es.addEventListener('page_result', function (e) {
+    var data = parseData(e);
+    if (!data) return;
+    if (typeof data.page_num === 'number') {
+      markPageDone(data.page_num, data.total_pages || _livePreview.totalPages, data.markdown || '');
+    }
+  });
+
+  ['profiling', 'noise_learning', 'table_merging', 'assembling', 'strategy_report'].forEach(function (evt) {
+    es.addEventListener(evt, function (e) {
+      var data = parseData(e);
+      if (!data) return;
+      updateStagePill(evt);
+      var pct = typeof data.pct === 'number' ? data.pct : null;
+      if (pct !== null) {
+        updateUploadCard(cardId, 'running', pct + '% - ' + (data.message || ''), taskId);
+      }
+    });
+  });
+
+  es.addEventListener('done', function () {
+    es.close();
+    finalizeLivePreview();
+    updateUploadCard(cardId, 'done', '완료', taskId);
+    delete _activeUploads[taskId];
+    loadHistory();
+  });
+
+  es.addEventListener('error', function (e) {
+    if (!e.data) return;
+    var data = parseData(e);
+    es.close();
+    updateUploadCard(cardId, 'error', (data && data.message) || '오류');
+    delete _activeUploads[taskId];
+    loadHistory();
   });
 
   es.onerror = function () {
@@ -574,48 +583,60 @@ function subscribeToProgress(taskId) {
   var es = new EventSource('/api/parse/' + taskId + '/status');
   ensureLivePreview(taskId);
 
-  es.addEventListener('message', function (e) {
-    var payload;
-    try { payload = JSON.parse(e.data); } catch (_) { return; }
+  function parseData(e) {
+    try { return JSON.parse(e.data); } catch (_) { return null; }
+  }
 
-    var event = payload.event;
-    var data = payload.data || {};
-
-    if (event === 'heartbeat') return;
-
+  es.addEventListener('page_progress', function (e) {
+    var data = parseData(e);
+    if (!data) return;
+    if (typeof data.completed_pages === 'number') {
+      markPageActive(data.completed_pages, data.total_pages || _livePreview.totalPages);
+      updateStagePill('page_progress');
+    }
     var pct = typeof data.pct === 'number' ? data.pct : null;
     var msg = data.message || '';
-
-    // Live preview hooks (mirrors multi-file path)
-    if (event === 'page_progress' && typeof data.page === 'number') {
-      markPageActive(data.page, data.total || _livePreview.totalPages);
-      updateStagePill('page_progress');
-    } else if (event === 'page_result' && typeof data.page === 'number') {
-      markPageDone(data.page, data.total || _livePreview.totalPages, data.markdown || '');
-    } else if (event === 'profiling' || event === 'noise_learning'
-            || event === 'table_merging' || event === 'assembling') {
-      updateStagePill(event);
-    }
-
     if (pct !== null) setProgress(pct, msg);
     else if (msg) updateStatus(msg);
+  });
 
-    if (event === 'done') {
-      es.close();
-      finalizeLivePreview();
-      setProgress(100, '변환 완료! 잠시 후 결과 페이지로 이동합니다...');
-      setTimeout(function () {
-        window.location.href = '/verify/' + taskId;
-      }, 1200);
+  es.addEventListener('page_result', function (e) {
+    var data = parseData(e);
+    if (!data) return;
+    if (typeof data.page_num === 'number') {
+      markPageDone(data.page_num, data.total_pages || _livePreview.totalPages, data.markdown || '');
     }
+  });
 
-    if (event === 'error') {
-      es.close();
-      progressWrap.classList.add('hidden');
-      dropZone.removeAttribute('aria-disabled');
-      showAlert(msg || '파싱 오류가 발생했습니다.', 'error');
-      loadHistory();
-    }
+  ['profiling', 'noise_learning', 'table_merging', 'assembling', 'strategy_report'].forEach(function (evt) {
+    es.addEventListener(evt, function (e) {
+      var data = parseData(e);
+      if (!data) return;
+      updateStagePill(evt);
+      var pct = typeof data.pct === 'number' ? data.pct : null;
+      var msg = data.message || '';
+      if (pct !== null) setProgress(pct, msg);
+      else if (msg) updateStatus(msg);
+    });
+  });
+
+  es.addEventListener('done', function () {
+    es.close();
+    finalizeLivePreview();
+    setProgress(100, '변환 완료! 잠시 후 결과 페이지로 이동합니다...');
+    setTimeout(function () {
+      window.location.href = '/verify/' + taskId;
+    }, 1200);
+  });
+
+  es.addEventListener('error', function (e) {
+    if (!e.data) return;
+    var data = parseData(e);
+    es.close();
+    progressWrap.classList.add('hidden');
+    dropZone.removeAttribute('aria-disabled');
+    showAlert((data && data.message) || '파싱 오류가 발생했습니다.', 'error');
+    loadHistory();
   });
 
   es.onerror = function () {

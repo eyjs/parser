@@ -119,9 +119,10 @@ class TestProgressTracker:
 
         events = list(tracker.stream())
         assert len(events) == 1
-        data = json.loads(events[0].replace("data: ", "").strip())
-        assert data["event"] == "test"
-        assert data["data"]["msg"] == "hello"
+        lines = events[0].strip().split("\n")
+        assert lines[0] == "event: test"
+        data = json.loads(lines[1].removeprefix("data: "))
+        assert data["msg"] == "hello"
 
     def test_push_stage(self) -> None:
         tracker = ProgressTracker()
@@ -130,5 +131,7 @@ class TestProgressTracker:
 
         events = list(tracker.stream())
         assert len(events) == 1
-        data = json.loads(events[0].replace("data: ", "").strip())
-        assert data["data"]["pct"] == 100
+        lines = events[0].strip().split("\n")
+        assert lines[0] == "event: done"
+        data = json.loads(lines[1].removeprefix("data: "))
+        assert data["pct"] == 100

@@ -44,7 +44,7 @@ class TaskState:
 
 
 # Events that signal pipeline stages (used by ``apply_event``).
-_STAGE_EVENTS = {"profiling", "noise_learning", "table_merging", "assembling"}
+_STAGE_EVENTS = {"profiling", "noise_learning", "table_merging", "assembling", "strategy_report"}
 
 
 class TaskRegistry:
