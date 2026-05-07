@@ -45,6 +45,9 @@ class FakeVLMEngine:
         image_data: bytes,
         format: str = "png",
         prompt_hint: str = "",
+        block_type: str = "",
+        context_text: str = "",
+        bbox_info: str = "",
     ) -> str:
         self.call_count += 1
         if self._should_fail:
@@ -123,7 +126,10 @@ class TestCaptionImages:
         received_hints: list[str] = []
 
         class HintCapture:
-            def describe_image(self, image_data, format="png", prompt_hint=""):
+            def describe_image(
+                self, image_data, format="png", prompt_hint="",
+                block_type="", context_text="", bbox_info="",
+            ):
                 received_hints.append(prompt_hint)
                 return "ok"
 

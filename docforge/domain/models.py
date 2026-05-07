@@ -138,6 +138,11 @@ class ParseStats:
     avg_line_length: float = 0.0
     noise_removed: NoiseStats = field(default_factory=NoiseStats)
     parse_time_ms: float = 0.0
+    # Phase 3: block-level retry statistics
+    blocks_retried: int = 0
+    blocks_fallback_ocr: int = 0
+    blocks_fallback_vlm: int = 0
+    avg_block_quality: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -187,6 +192,28 @@ class PageError:
     error_type: str            # e.g. "ProcessingError", "OCRError", "TimeoutError"
     message: str               # Short human-readable summary
     traceback: str | None = None  # Full traceback string for debugging (optional)
+
+
+@dataclass(frozen=True)
+class NormalizedBlock:
+    """Unified intermediate block for confidence-based routing.
+
+    Merges Vision OCR / Surya layout / heuristic outputs into a single
+    representation so the routing engine can apply confidence thresholds
+    consistently regardless of the upstream source.
+
+    This is a routing-internal model -- not exposed in ``PageContent``
+    or downstream outputs.
+    """
+
+    block_id: str
+    bbox: BBox
+    block_type: BlockType
+    confidence: float = 1.0
+    text: str = ""
+    source: str = ""            # "vision", "surya", "heuristic"
+    original_label: str = ""    # Surya raw label, e.g. "Table", "Figure"
+    page_num: int = 0
 
 
 @dataclass(frozen=True)

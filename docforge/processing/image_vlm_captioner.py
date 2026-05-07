@@ -27,6 +27,8 @@ def caption_images(
     images: list[ParsedImage],
     vlm_engine: "VisionLLMEngine",
     prompt_hint: str = "",
+    block_type_hints: dict[str, str] | None = None,
+    context_texts: dict[str, str] | None = None,
 ) -> list[ParsedImage]:
     """Generate VLM alt-text for images that have actual bytes.
 
@@ -34,6 +36,10 @@ def caption_images(
         images: Images extracted for the current page.
         vlm_engine: A ``VisionLLMEngine`` that supports ``describe_image()``.
         prompt_hint: Optional domain hint (e.g. ``"보험약관"``).
+        block_type_hints: Optional ``{block_id: block_type_str}`` mapping
+            for BlockType-specific prompt selection (Phase 2).
+        context_texts: Optional ``{block_id: ocr_text}`` mapping for
+            enriched VLM input (charts).
 
     Returns:
         New list of ``ParsedImage`` with ``alt_text`` populated where
@@ -43,16 +49,31 @@ def caption_images(
     if not images:
         return []
 
+    bt_hints = block_type_hints or {}
+    ctx_texts = context_texts or {}
+
     out: list[ParsedImage] = []
     for image in images:
         if not image.data:
             out.append(image)
             continue
         try:
+            block_type = bt_hints.get(image.block_id, "")
+            context_text = ctx_texts.get(image.block_id, "")
+            bbox = image.bbox
+            bbox_info = (
+                f"[{bbox.x0:.1f},{bbox.y0:.1f},{bbox.x1:.1f},{bbox.y1:.1f}]"
+                if block_type
+                else ""
+            )
+
             alt_text = vlm_engine.describe_image(
                 image_data=image.data,
                 format=image.format,
                 prompt_hint=prompt_hint,
+                block_type=block_type,
+                context_text=context_text,
+                bbox_info=bbox_info,
             )
         except Exception:
             logger.warning(

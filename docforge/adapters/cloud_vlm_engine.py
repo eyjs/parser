@@ -100,20 +100,85 @@ class CloudVisionEngine:
         image_data: bytes,
         format: str = "png",
         prompt_hint: str = "",
+        block_type: str = "",
+        context_text: str = "",
+        bbox_info: str = "",
     ) -> str:
-        """Generate alt-text for an image using cloud VLM."""
+        """Generate alt-text for an image using cloud VLM.
+
+        Phase 2 enriched input: ``block_type`` selects a specialised
+        prompt; ``context_text`` and ``bbox_info`` are appended for
+        charts and tables.
+        """
         if not image_data:
             return ""
         provider = self._resolve_provider()
         if provider is None:
             return ""
 
-        prompt = _CAPTION_PROMPT.format(domain_hint=prompt_hint or "문서")
+        prompt = self._build_describe_prompt(
+            prompt_hint=prompt_hint,
+            block_type=block_type,
+            context_text=context_text,
+            bbox_info=bbox_info,
+        )
         try:
             return self._call_vision_api(provider, image_data, format, prompt).strip()
         except Exception:
             logger.warning("Cloud VLM describe_image failed", exc_info=True)
             return ""
+
+    @staticmethod
+    def _build_describe_prompt(
+        prompt_hint: str = "",
+        block_type: str = "",
+        context_text: str = "",
+        bbox_info: str = "",
+    ) -> str:
+        """Select the appropriate prompt based on block type."""
+        domain = prompt_hint or "문서"
+        bt = block_type.lower()
+
+        if bt == "chart":
+            prompt = (
+                f"이 차트 이미지를 분석하세요.\n"
+                f"도메인: {domain}\n"
+                f"요구사항:\n"
+                f"- 차트 제목, X축/Y축 레이블, 범례를 식별\n"
+                f"- 데이터 트렌드와 핵심 수치를 설명\n"
+                f"- 한국어로 답변\n"
+                f"- 출력: 분석 내용만 (접두어 없이)"
+            )
+        elif bt == "table":
+            prompt = (
+                f"이 표 이미지의 내용을 마크다운 테이블로 재추출하세요.\n"
+                f"도메인: {domain}\n"
+                f"요구사항:\n"
+                f"- 행/열 구조를 정확히 재현\n"
+                f"- 셀 텍스트를 그대로 추출\n"
+                f"- 한국어로 답변\n"
+                f"- 출력: 마크다운 테이블만"
+            )
+        elif bt == "figure":
+            prompt = (
+                f"이 이미지의 내용을 설명하세요.\n"
+                f"도메인: {domain}\n"
+                f"요구사항:\n"
+                f"- 이미지 내 주요 시각 요소 식별\n"
+                f"- 한국어로 답변\n"
+                f"- 1-2문장으로 간결하게\n"
+                f"- 출력: 설명만 (접두어 없이)"
+            )
+        else:
+            prompt = _CAPTION_PROMPT.format(domain_hint=domain)
+
+        # Append enriched context for charts/tables
+        if context_text:
+            prompt += f"\n\n참고 OCR 텍스트:\n{context_text[:500]}"
+        if bbox_info:
+            prompt += f"\n위치 정보: {bbox_info}"
+
+        return prompt
 
     # -- internal -------------------------------------------------------------
 

@@ -40,6 +40,12 @@ class BlockType(str, Enum):
     ITEM = "item"
     TEXT = "text"
     FOOTNOTE = "footnote"
+    # --- Phase 2: confidence-based routing ---
+    TABLE = "table"
+    FIGURE = "figure"
+    CHART = "chart"
+    CAPTION = "caption"
+    UNKNOWN = "unknown"
 
 
 class SelectionReason(Enum):

@@ -204,13 +204,22 @@ class VisionLLMEngine(Protocol):
         image_data: bytes,
         format: str = "png",
         prompt_hint: str = "",
+        block_type: str = "",
+        context_text: str = "",
+        bbox_info: str = "",
     ) -> str:
         """Generate a concise alt-text description for an image.
 
         Args:
             image_data: Raw image bytes (PNG or JPEG).
-            format: Image format — ``"png"`` or ``"jpeg"``.
+            format: Image format -- ``"png"`` or ``"jpeg"``.
             prompt_hint: Optional domain hint for more relevant captions.
+            block_type: Semantic type hint (``"chart"``, ``"figure"``,
+                ``"table"``).  Adapters may use this to select a
+                specialised prompt.
+            context_text: OCR text from the same region, for enriched
+                VLM input (especially charts).
+            bbox_info: Bounding-box coordinate string for spatial context.
 
         Returns:
             A short description string, or ``""`` on failure.

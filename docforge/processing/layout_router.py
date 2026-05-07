@@ -18,11 +18,124 @@ No imports from ``surya`` / ``surya_ocr`` here (Protocol injection only).
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
+
 from docforge.domain.enums import BlockType
-from docforge.domain.models import LayoutBlock, TextBlock
+from docforge.domain.models import LayoutBlock, NormalizedBlock, TextBlock
 from docforge.domain.value_objects import BBox
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_IOU_THRESHOLD = 0.3
+
+
+# ---- Phase 2: Confidence-based Routing Rule Engine -----------------------
+
+
+@dataclass(frozen=True)
+class RoutingRule:
+    """A single routing rule: block_type + confidence range -> action."""
+
+    block_type: BlockType
+    confidence_min: float   # inclusive lower bound
+    confidence_max: float   # exclusive upper bound
+    action: str             # "table_parser", "vlm_crop", "vlm_chart", "vlm_caption", "markdown", "fallback"
+    priority: int = 0
+
+
+@dataclass(frozen=True)
+class RoutingDecision:
+    """Routing decision for a single normalized block."""
+
+    block: NormalizedBlock
+    action: str
+    confidence: float
+    rule_matched: str       # human-readable description of the matched rule
+
+
+DEFAULT_RULES: list[RoutingRule] = [
+    # TABLE -- high confidence -> direct pdfplumber parse
+    RoutingRule(BlockType.TABLE, 0.8, 1.01, "table_parser", priority=10),
+    # TABLE -- low confidence -> VLM crop-and-correct
+    RoutingRule(BlockType.TABLE, 0.0, 0.8, "vlm_crop", priority=10),
+    # CHART -- always VLM with enriched input
+    RoutingRule(BlockType.CHART, 0.0, 1.01, "vlm_chart", priority=10),
+    # FIGURE -- always VLM caption
+    RoutingRule(BlockType.FIGURE, 0.0, 1.01, "vlm_caption", priority=10),
+    # TEXT-family -- high confidence -> markdown
+    RoutingRule(BlockType.TEXT, 0.5, 1.01, "markdown", priority=5),
+    RoutingRule(BlockType.HEADING, 0.0, 1.01, "markdown", priority=5),
+    RoutingRule(BlockType.CLAUSE, 0.0, 1.01, "markdown", priority=5),
+    RoutingRule(BlockType.SUBCLAUSE, 0.0, 1.01, "markdown", priority=5),
+    RoutingRule(BlockType.ITEM, 0.0, 1.01, "markdown", priority=5),
+    RoutingRule(BlockType.FOOTNOTE, 0.0, 1.01, "markdown", priority=5),
+    RoutingRule(BlockType.CAPTION, 0.0, 1.01, "markdown", priority=5),
+    # TEXT -- low confidence -> fallback
+    RoutingRule(BlockType.TEXT, 0.0, 0.5, "fallback", priority=5),
+    # UNKNOWN -- always fallback
+    RoutingRule(BlockType.UNKNOWN, 0.0, 1.01, "fallback", priority=0),
+]
+
+
+def route_blocks(
+    blocks: list[NormalizedBlock],
+    rules: list[RoutingRule] | None = None,
+) -> list[RoutingDecision]:
+    """Apply routing rules to normalized blocks.
+
+    For each block, find all rules matching ``block_type`` and whose
+    confidence range covers ``block.confidence``.  Among matches, pick
+    the highest-priority rule.  If no rule matches, fall back to
+    ``"fallback"``.
+
+    Every decision is logged at INFO level for audit purposes.
+    """
+    if not blocks:
+        return []
+
+    active_rules = rules if rules is not None else DEFAULT_RULES
+    decisions: list[RoutingDecision] = []
+
+    for block in blocks:
+        best_rule: RoutingRule | None = None
+        for rule in active_rules:
+            if (
+                rule.block_type == block.block_type
+                and rule.confidence_min <= block.confidence < rule.confidence_max
+            ):
+                if best_rule is None or rule.priority > best_rule.priority:
+                    best_rule = rule
+
+        if best_rule is not None:
+            action = best_rule.action
+            rule_desc = (
+                f"{best_rule.block_type.value}@"
+                f"[{best_rule.confidence_min:.1f},{best_rule.confidence_max:.1f})"
+                f"->{best_rule.action}"
+            )
+        else:
+            action = "fallback"
+            rule_desc = "no-rule-matched->fallback"
+
+        decision = RoutingDecision(
+            block=block,
+            action=action,
+            confidence=block.confidence,
+            rule_matched=rule_desc,
+        )
+        decisions.append(decision)
+
+        logger.info(
+            "routing: block=%s type=%s conf=%.2f -> action=%s rule=%s",
+            block.block_id,
+            block.block_type.value,
+            block.confidence,
+            action,
+            rule_desc,
+        )
+
+    return decisions
 
 
 def merge_and_label(
@@ -126,8 +239,12 @@ def bbox_iou(a: BBox, b: BBox) -> float:
 
 __all__ = [
     "DEFAULT_IOU_THRESHOLD",
+    "DEFAULT_RULES",
+    "RoutingDecision",
+    "RoutingRule",
     "bbox_iou",
     "build_layout_label_map",
     "merge_and_label",
     "merge_layout_with_text",
+    "route_blocks",
 ]

@@ -92,8 +92,16 @@ class Qwen2VLMLXEngine:
         image_data: bytes,
         format: str = "png",
         prompt_hint: str = "",
+        block_type: str = "",
+        context_text: str = "",
+        bbox_info: str = "",
     ) -> str:
-        """Generate alt-text for an image using local Qwen2-VL."""
+        """Generate alt-text for an image using local Qwen2-VL.
+
+        The ``block_type``, ``context_text``, and ``bbox_info`` parameters
+        are accepted for Protocol compatibility but ignored by the local
+        model (enriched input is only effective with cloud VLM providers).
+        """
         if not image_data:
             return ""
         try:

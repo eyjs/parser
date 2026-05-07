@@ -96,25 +96,48 @@ def table_to_markdown(table: Table) -> str:
     return "\n".join(lines) + review_note
 
 
-def _deduplicate_tables(tables: tuple[Table, ...]) -> list[Table]:
-    """Remove duplicate tables with overlapping bounding boxes.
+def _table_content_hash(table: Table) -> str:
+    """Content-based hash for a table -- catches duplicates with different bboxes."""
+    import hashlib
 
-    When multiple extraction passes detect the same physical table, the
-    resulting ``Table`` objects share near-identical bboxes.  We keep the
-    first occurrence and drop later ones whose IoU exceeds 0.8.
+    cell_texts = sorted(c.text.strip() for c in table.cells if c.text.strip())
+    return hashlib.md5("|".join(cell_texts).encode()).hexdigest()
+
+
+def _deduplicate_tables(tables: tuple[Table, ...]) -> list[Table]:
+    """Remove duplicate tables with overlapping bboxes OR identical content.
+
+    Two dedup strategies are applied:
+    1. **IoU-based** (existing): IoU > 0.8 between bboxes.
+    2. **Content-hash** (Phase 2): identical cell-text sets even when
+       bboxes differ (e.g. cross-page merge artefacts).
+
+    The first occurrence is always kept.
     """
     if len(tables) <= 1:
         return list(tables)
 
     kept: list[Table] = []
+    seen_hashes: set[str] = set()
+
     for table in tables:
+        # Check IoU overlap with already-kept tables
         is_dup = False
         for existing in kept:
             if table.bbox.iou(existing.bbox) > 0.8:
                 is_dup = True
                 break
-        if not is_dup:
-            kept.append(table)
+        if is_dup:
+            continue
+
+        # Check content hash
+        content_hash = _table_content_hash(table)
+        if content_hash in seen_hashes:
+            continue
+
+        kept.append(table)
+        seen_hashes.add(content_hash)
+
     return kept
 
 

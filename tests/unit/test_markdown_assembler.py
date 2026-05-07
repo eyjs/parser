@@ -162,8 +162,8 @@ class TestTableDeduplication:
         assert result[0] is t1
 
     def test_non_overlapping_tables_kept(self) -> None:
-        t1 = self._make_table(0, 0, 100, 100)
-        t2 = self._make_table(200, 200, 300, 300)
+        t1 = self._make_table(0, 0, 100, 100, text="Alpha")
+        t2 = self._make_table(200, 200, 300, 300, text="Beta")
         result = _deduplicate_tables((t1, t2))
         assert len(result) == 2
 
@@ -177,9 +177,26 @@ class TestTableDeduplication:
 
     def test_low_iou_keeps_both(self) -> None:
         """Two tables with IoU < 0.8 should both be kept."""
-        t1 = self._make_table(0, 0, 100, 100)
+        t1 = self._make_table(0, 0, 100, 100, text="Gamma")
         # Overlap is about 50x50 = 2500, union = 10000+10000-2500=17500, IoU~0.14
-        t2 = self._make_table(50, 50, 150, 150)
+        t2 = self._make_table(50, 50, 150, 150, text="Delta")
+        result = _deduplicate_tables((t1, t2))
+        assert len(result) == 2
+
+    def test_content_hash_dedup_different_bbox(self) -> None:
+        """Phase 2: tables with different bboxes but identical cell content
+        should be deduplicated via content-hash."""
+        t1 = self._make_table(0, 0, 100, 100, text="SameValue")
+        # Completely different bbox, but same cell text
+        t2 = self._make_table(500, 500, 600, 600, text="SameValue")
+        result = _deduplicate_tables((t1, t2))
+        assert len(result) == 1
+        assert result[0] is t1
+
+    def test_content_hash_keeps_different_content(self) -> None:
+        """Tables with different bboxes AND different content should both be kept."""
+        t1 = self._make_table(0, 0, 100, 100, text="Alpha")
+        t2 = self._make_table(500, 500, 600, 600, text="Beta")
         result = _deduplicate_tables((t1, t2))
         assert len(result) == 2
 

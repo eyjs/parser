@@ -1,14 +1,18 @@
-"""Tests for ``layout_router`` — IoU matching, label override, frozen safety."""
+"""Tests for ``layout_router`` — IoU matching, label override, routing, frozen safety."""
 
 from __future__ import annotations
 
 from docforge.domain.enums import BlockType
-from docforge.domain.models import LayoutBlock, TextBlock
+from docforge.domain.models import LayoutBlock, NormalizedBlock, TextBlock
 from docforge.domain.value_objects import BBox, FontInfo
 from docforge.processing.layout_router import (
+    DEFAULT_RULES,
+    RoutingDecision,
+    RoutingRule,
     bbox_iou,
     build_layout_label_map,
     merge_layout_with_text,
+    route_blocks,
 )
 
 
@@ -116,3 +120,64 @@ class TestBuildLayoutLabelMap:
     def test_empty_layout_returns_empty(self) -> None:
         blocks = [_tb("cap", 0, 0, 100, 20, block_id="x")]
         assert build_layout_label_map(blocks, []) == {}
+
+
+# ---- Phase 2: route_blocks tests ----
+
+def _nb(
+    block_type: BlockType,
+    confidence: float,
+    block_id: str = "nb-001",
+) -> NormalizedBlock:
+    return NormalizedBlock(
+        block_id=block_id,
+        bbox=BBox(0, 0, 100, 50),
+        block_type=block_type,
+        confidence=confidence,
+        source="test",
+        page_num=1,
+    )
+
+
+class TestRouteBlocks:
+    """Phase 2: confidence-based routing via route_blocks."""
+
+    def test_empty_input_returns_empty(self) -> None:
+        assert route_blocks([]) == []
+
+    def test_table_high_confidence(self) -> None:
+        decisions = route_blocks([_nb(BlockType.TABLE, 0.9)])
+        assert decisions[0].action == "table_parser"
+
+    def test_table_low_confidence(self) -> None:
+        decisions = route_blocks([_nb(BlockType.TABLE, 0.5)])
+        assert decisions[0].action == "vlm_crop"
+
+    def test_chart_routes_to_vlm_chart(self) -> None:
+        decisions = route_blocks([_nb(BlockType.CHART, 0.7)])
+        assert decisions[0].action == "vlm_chart"
+
+    def test_figure_routes_to_vlm_caption(self) -> None:
+        decisions = route_blocks([_nb(BlockType.FIGURE, 0.8)])
+        assert decisions[0].action == "vlm_caption"
+
+    def test_text_high_conf_markdown(self) -> None:
+        decisions = route_blocks([_nb(BlockType.TEXT, 0.9)])
+        assert decisions[0].action == "markdown"
+
+    def test_text_low_conf_fallback(self) -> None:
+        decisions = route_blocks([_nb(BlockType.TEXT, 0.3)])
+        assert decisions[0].action == "fallback"
+
+    def test_decision_is_frozen(self) -> None:
+        decisions = route_blocks([_nb(BlockType.TABLE, 0.9)])
+        try:
+            decisions[0].action = "other"  # type: ignore[misc]
+        except AttributeError:
+            return
+        raise AssertionError("RoutingDecision should be frozen")
+
+    def test_custom_rules(self) -> None:
+        custom = [RoutingRule(BlockType.TEXT, 0.0, 1.01, "custom", priority=100)]
+        decisions = route_blocks([_nb(BlockType.TEXT, 0.9)], rules=custom)
+        assert decisions[0].action == "custom"
