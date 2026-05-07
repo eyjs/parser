@@ -19,5 +19,7 @@ EXPOSE 5051
 
 CMD ["gunicorn", "docforge.web.app:create_app()", \
      "--bind", "0.0.0.0:5051", \
+     "--worker-class", "gthread", \
+     "--threads", "16", \
      "--workers", "2", \
      "--timeout", "300"]

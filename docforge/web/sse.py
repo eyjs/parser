@@ -6,6 +6,7 @@ import json
 import logging
 import queue
 import threading
+import time
 from typing import Generator, Optional
 
 from docforge.web.task_state import TaskRegistry, registry as _default_registry
@@ -36,6 +37,9 @@ _STAGE_PCT: dict[str, int] = {
     EVT_ASSEMBLING: 95,
     EVT_DONE: 100,
 }
+
+# Maximum duration (seconds) a single SSE connection may stay open.
+_MAX_CONNECTION_SECONDS = 600
 
 
 class ProgressTracker:
@@ -72,7 +76,7 @@ class ProgressTracker:
             try:
                 self._registry.apply_event(self.task_id, event, data)
             except Exception:
-                # Persistence must never break the live stream — but log
+                # Persistence must never break the live stream -- but log
                 # the first failure so the issue is at least visible.
                 if not self._persistence_warned:
                     logger.warning(
@@ -89,7 +93,7 @@ class ProgressTracker:
     def push_page(self, page_num: int, total_pages: int, message: str = "") -> None:
         """Emit a page-level progress event with calculated percentage."""
         if total_pages > 0:
-            # Pages occupy 15% – 85% of the progress range
+            # Pages occupy 15% - 85% of the progress range
             page_range = 85 - 15
             pct = 15 + int((page_num / total_pages) * page_range)
         else:
@@ -130,12 +134,24 @@ class ProgressTracker:
     # ------------------------------------------------------------------
 
     def stream(self) -> Generator[str, None, None]:
-        """Yield SSE-formatted strings until the producer signals done."""
+        """Yield SSE-formatted strings until the producer signals done.
+
+        Heartbeat comments (``:``) are emitted every 30 seconds of
+        inactivity to keep the connection alive and detect client
+        disconnects. The connection is forcibly closed after
+        ``_MAX_CONNECTION_SECONDS`` (default 600s / 10 minutes).
+        """
+        start = time.monotonic()
         while not self._done.is_set() or not self._queue.empty():
+            # Enforce maximum connection duration
+            if time.monotonic() - start > _MAX_CONNECTION_SECONDS:
+                logger.debug("SSE connection exceeded max duration (%ds), closing", _MAX_CONNECTION_SECONDS)
+                break
             try:
-                item = self._queue.get(timeout=1.0)
+                item = self._queue.get(timeout=30)
             except queue.Empty:
-                yield f"data: {json.dumps({'event': EVT_HEARTBEAT})}\n\n"
+                # 30 seconds with no events -- send SSE comment heartbeat
+                yield ": heartbeat\n\n"
                 continue
             if item is None:
                 break
@@ -143,7 +159,7 @@ class ProgressTracker:
 
 
 # ---------------------------------------------------------------------------
-# Progress callback → SSE mapping
+# Progress callback -> SSE mapping
 # ---------------------------------------------------------------------------
 
 

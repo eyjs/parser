@@ -182,22 +182,51 @@ class TestStorageExtensions:
         store = TaskStore(tmp_path)
         record = store.create("test.pdf", "")
 
-        # Save original version
+        # Save original version (UUID-based filename)
         v0 = store.save_version(record.task_id, "# Original", "original")
-        assert v0 == "v0_original.md"
+        assert v0 is not None
+        assert v0.startswith("v_")
+        assert v0.endswith("_original.md")
 
         # Save edited version
         v1 = store.save_version(record.task_id, "# Edited")
         assert v1 is not None
-        assert v1.startswith("v1_")
+        assert v1.startswith("v_")
 
-        # List versions
+        # List versions (sorted by mtime)
         versions = store.list_versions(record.task_id)
         assert len(versions) == 2
 
-        # Get version content
-        content = store.get_version_content(record.task_id, "v0_original.md")
+        # Get version content by exact filename
+        content = store.get_version_content(record.task_id, v0)
         assert content == "# Original"
+
+    def test_version_no_race_condition(self, tmp_path: Path) -> None:
+        """Concurrent save_version calls must not produce duplicate filenames."""
+        import threading
+
+        from docforge.web.storage import TaskStore
+        store = TaskStore(tmp_path)
+        record = store.create("test.pdf", "")
+
+        results: list[str | None] = []
+        lock = threading.Lock()
+
+        def _save(idx: int) -> None:
+            name = store.save_version(record.task_id, f"# Version {idx}", f"thread{idx}")
+            with lock:
+                results.append(name)
+
+        threads = [threading.Thread(target=_save, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # All 10 saves should succeed with unique filenames
+        assert len(results) == 10
+        assert all(r is not None for r in results)
+        assert len(set(results)) == 10  # all unique
 
     def test_backward_compat_pending_status(self, tmp_path: Path) -> None:
         """Old tasks with 'pending' status should load as 'queued'."""

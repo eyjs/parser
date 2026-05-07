@@ -1,10 +1,15 @@
-"""V1 API routes for DocForge — stable, versioned, authenticated."""
+"""V1 API routes for DocForge -- stable, versioned, authenticated."""
 
 from __future__ import annotations
 
+import atexit
 import dataclasses
 import logging
+import os
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request
@@ -14,6 +19,32 @@ from docforge.web.routes import _safe_filename
 logger = logging.getLogger(__name__)
 
 v1_bp = Blueprint("v1", __name__, url_prefix="/v1")
+
+# ---------------------------------------------------------------------------
+# Shared executor for synchronous parse requests
+# ---------------------------------------------------------------------------
+
+_SYNC_TIMEOUT = 280  # seconds -- must be < Gunicorn's --timeout (300)
+
+_sync_executor: ThreadPoolExecutor | None = None
+_sync_executor_lock = threading.Lock()
+
+
+def _get_sync_executor() -> ThreadPoolExecutor:
+    """Return (or lazily create) the /v1/parse/sync thread pool."""
+    global _sync_executor
+    if _sync_executor is not None:
+        return _sync_executor
+    with _sync_executor_lock:
+        if _sync_executor is not None:
+            return _sync_executor
+        max_w = min(4, os.cpu_count() or 2)
+        _sync_executor = ThreadPoolExecutor(
+            max_workers=max_w,
+            thread_name_prefix="v1-sync",
+        )
+        atexit.register(_sync_executor.shutdown, wait=False)
+        return _sync_executor
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +84,7 @@ _EXCEL_MIME = {
 
 @v1_bp.route("/parse/sync", methods=["POST", "OPTIONS"])
 def parse_sync() -> tuple[Response, int]:
-    """Synchronous document parsing — file bytes in, markdown out.
+    """Synchronous document parsing -- file bytes in, markdown out.
 
     Supports PDF, CSV, and Excel files. Routes internally by MIME type.
     Designed for ai-platform ``DocForgeClient`` and KMS ai-worker
@@ -85,7 +116,6 @@ def parse_sync() -> tuple[Response, int]:
         }), 415
 
     # Route by MIME type
-    tmp_dir = None
     try:
         if base_mime in _CSV_MIME:
             return _handle_csv(file, base_mime)
@@ -108,7 +138,12 @@ def parse_sync() -> tuple[Response, int]:
 
 
 def _handle_pdf(file) -> tuple[Response, int]:
-    """PDF 파일 파싱 처리."""
+    """PDF 파일 파싱 처리.
+
+    The heavy ``parse_pdf`` call is offloaded to a shared thread pool and
+    awaited with a timeout so that a single slow document cannot block the
+    request thread indefinitely.
+    """
     tmp_dir = None
     try:
         tmp_dir = tempfile.mkdtemp(prefix="docforge_sync_")
@@ -118,7 +153,22 @@ def _handle_pdf(file) -> tuple[Response, int]:
 
         from docforge.usecases.parse_pdf import parse_pdf
 
-        result = parse_pdf(pdf_path)
+        future = _get_sync_executor().submit(parse_pdf, pdf_path)
+        try:
+            result = future.result(timeout=_SYNC_TIMEOUT)
+        except FutureTimeout:
+            future.cancel()
+            logger.warning(
+                "parse_sync timed out after %ds for file %s",
+                _SYNC_TIMEOUT, file.filename,
+            )
+            return jsonify({
+                "success": False,
+                "error": {
+                    "code": "REQUEST_TIMEOUT",
+                    "message": f"파싱 시간이 {_SYNC_TIMEOUT}초를 초과했습니다. 파일이 너무 크거나 복잡할 수 있습니다.",
+                },
+            }), 408
 
         metadata_dict = _serialize(result.metadata)
         stats_dict = _serialize(result.stats)

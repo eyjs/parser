@@ -134,18 +134,21 @@ class TaskStore:
     # ------------------------------------------------------------------
 
     def save_version(self, task_id: str, markdown: str, label: str = "") -> str | None:
-        """Save a markdown version file. Returns the version filename or None."""
+        """Save a markdown version file. Returns the version filename or None.
+
+        Uses a UUID-based filename to eliminate race conditions when
+        multiple threads call ``save_version`` concurrently.
+        """
         task_dir = self._dir / task_id / "versions"
         task_dir.mkdir(parents=True, exist_ok=True)
 
-        existing = sorted(task_dir.glob("v*_*.md"))
-        next_num = len(existing)
+        version_id = uuid.uuid4().hex[:8]
 
         if not label:
             ts = datetime.now(KST).strftime("%Y%m%d_%H%M%S")
             label = ts
 
-        version_name = f"v{next_num}_{label}.md"
+        version_name = f"v_{version_id}_{label}.md"
         version_path = task_dir / version_name
         try:
             version_path.write_text(markdown, encoding="utf-8")
@@ -155,13 +158,18 @@ class TaskStore:
             return None
 
     def list_versions(self, task_id: str) -> list[dict]:
-        """List all saved versions for a task."""
+        """List all saved versions for a task, sorted by creation time."""
         task_dir = self._dir / task_id / "versions"
         if not task_dir.exists():
             return []
 
+        # Match both old (v0_*.md, v1_*.md) and new (v_*.md) patterns
+        files = list(task_dir.glob("v*_*.md"))
+        # Sort by modification time (oldest first) for stable ordering
+        files.sort(key=lambda f: f.stat().st_mtime)
+
         versions = []
-        for f in sorted(task_dir.glob("v*_*.md")):
+        for f in files:
             versions.append({
                 "name": f.name,
                 "path": str(f),

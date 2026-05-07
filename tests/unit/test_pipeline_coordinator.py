@@ -1,4 +1,4 @@
-"""Tests for PipelineCoordinator (P1-3)."""
+"""Tests for PipelineCoordinator (P1-3) and global executor singleton."""
 
 from __future__ import annotations
 
@@ -6,9 +6,15 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+import pytest
+
 from docforge.domain.models import NoiseStats
 from docforge.usecases.page_processor import PageResult
-from docforge.usecases.pipeline_coordinator import PipelineCoordinator
+from docforge.usecases.pipeline_coordinator import (
+    PipelineCoordinator,
+    get_executor,
+    shutdown_executor,
+)
 
 
 class FakeProcessor:
@@ -43,6 +49,14 @@ def _silent(_msg: str) -> None:
     pass
 
 
+@pytest.fixture(autouse=True)
+def _reset_global_executor():
+    """Ensure each test starts with a fresh global executor."""
+    shutdown_executor()
+    yield
+    shutdown_executor()
+
+
 class TestPipelineCoordinatorRun:
 
     def test_processes_all_pages(self) -> None:
@@ -64,8 +78,6 @@ class TestPipelineCoordinatorRun:
         assert len(results) == 4
         # Ordering invariant guarantees downstream aggregation works
         # regardless of completion order.
-        # We can't read indices off PageResult directly (no field), but
-        # we can confirm the shape is preserved.
         for r in results:
             assert isinstance(r, PageResult)
 
@@ -79,7 +91,7 @@ class TestPipelineCoordinatorRun:
         assert len(results) == 3
         assert len(errors) == 1
         err = errors[0]
-        assert err.page_number == 2  # page_idx=1 → 1-based page 2
+        assert err.page_number == 2  # page_idx=1 -> 1-based page 2
         assert err.error_type == "RuntimeError"
         assert "boom" in err.message
         assert err.traceback
@@ -101,3 +113,37 @@ class TestPipelineCoordinatorRun:
         )
         assert results == []
         assert errors == []
+
+
+class TestGlobalExecutorSingleton:
+
+    def test_get_executor_returns_same_instance(self) -> None:
+        """Two calls to get_executor must return the identical object."""
+        ex1 = get_executor(4)
+        ex2 = get_executor(8)  # max_workers ignored on second call
+        assert ex1 is ex2
+
+    def test_shutdown_and_recreate(self) -> None:
+        """After shutdown, get_executor creates a fresh instance."""
+        ex1 = get_executor(4)
+        shutdown_executor()
+        ex2 = get_executor(4)
+        assert ex1 is not ex2
+
+    def test_concurrent_coordinators_share_pool(self) -> None:
+        """Two PipelineCoordinators running concurrently share the same pool."""
+        proc_a = FakeProcessor(total=3)
+        proc_b = FakeProcessor(total=3)
+        coord_a = PipelineCoordinator(page_processor=proc_a, max_workers=2)
+        coord_b = PipelineCoordinator(page_processor=proc_b, max_workers=2)
+
+        results_a, errors_a = coord_a.run(
+            Path("a.pdf"), 3, threading.Semaphore(1), _silent,
+        )
+        results_b, errors_b = coord_b.run(
+            Path("b.pdf"), 3, threading.Semaphore(1), _silent,
+        )
+        assert len(results_a) == 3
+        assert len(results_b) == 3
+        assert errors_a == []
+        assert errors_b == []
