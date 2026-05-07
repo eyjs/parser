@@ -21,6 +21,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Optional
 
+from docforge.web.events import (
+    EVT_ASSEMBLING,
+    EVT_NOISE_LEARNING,
+    EVT_PROFILING,
+    EVT_STRATEGY_REPORT,
+    EVT_TABLE_MERGING,
+)
+
 
 TaskStatus = Literal["queued", "running", "done", "error", "cancelled"]
 
@@ -44,7 +52,7 @@ class TaskState:
 
 
 # Events that signal pipeline stages (used by ``apply_event``).
-_STAGE_EVENTS = {"profiling", "noise_learning", "table_merging", "assembling", "strategy_report"}
+_STAGE_EVENTS = {EVT_PROFILING, EVT_NOISE_LEARNING, EVT_TABLE_MERGING, EVT_ASSEMBLING, EVT_STRATEGY_REPORT}
 
 
 class TaskRegistry:

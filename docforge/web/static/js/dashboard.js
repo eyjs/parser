@@ -82,7 +82,7 @@ function ensureLivePreview(taskId) {
 
 function updateStagePill(eventName) {
   // Mark prior stages done, current as active
-  var order = ['profiling', 'noise_learning', 'page_progress', 'table_merging', 'assembling'];
+  var order = ['strategy_report', 'profiling', 'noise_learning', 'page_progress', 'table_merging', 'assembling'];
   var currentIdx = order.indexOf(eventName);
   if (currentIdx === -1) return;
   Array.prototype.forEach.call(livePreviewStages.querySelectorAll('.stage-pill'), function (el) {

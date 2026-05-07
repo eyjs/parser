@@ -8,24 +8,21 @@ import queue
 import threading
 from typing import Generator, Optional
 
+from docforge.web.events import (  # noqa: F401 — re-exported for backward compat
+    EVT_ASSEMBLING,
+    EVT_DONE,
+    EVT_ERROR,
+    EVT_HEARTBEAT,
+    EVT_NOISE_LEARNING,
+    EVT_PAGE,
+    EVT_PAGE_RESULT,
+    EVT_PROFILING,
+    EVT_STRATEGY_REPORT,
+    EVT_TABLE_MERGING,
+)
 from docforge.web.task_state import TaskRegistry, registry as _default_registry
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Progress event constants
-# ---------------------------------------------------------------------------
-
-EVT_STRATEGY_REPORT = "strategy_report"
-EVT_PROFILING = "profiling"
-EVT_NOISE_LEARNING = "noise_learning"
-EVT_PAGE = "page_progress"
-EVT_TABLE_MERGING = "table_merging"
-EVT_ASSEMBLING = "assembling"
-EVT_DONE = "done"
-EVT_ERROR = "error"
-EVT_HEARTBEAT = "heartbeat"
-EVT_PAGE_RESULT = "page_result"
 
 # 단계별 진행률(%) 기준값
 _STAGE_PCT: dict[str, int] = {

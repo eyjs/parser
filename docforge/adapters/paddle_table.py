@@ -147,20 +147,22 @@ class PaddleTableExtractor:
         if not raw_rows:
             return None
 
+        _COL_SAFETY_MARGIN = 8
         max_cols = max((sum(cs for _, cs, _ in row) for row in raw_rows), default=0)
-        occupied = [[False] * (max_cols + 8) for _ in range(num_rows)]
+        grid_width = max_cols + _COL_SAFETY_MARGIN
+        occupied = [[False] * grid_width for _ in range(num_rows)]
         cells: list[TableCell] = []
 
         for r_idx, row_cells in enumerate(raw_rows):
             c_idx = 0
             for text, cs, rs in row_cells:
-                while c_idx < max_cols + 8 and occupied[r_idx][c_idx]:
+                while c_idx < grid_width and occupied[r_idx][c_idx]:
                     c_idx += 1
                 cells.append(TableCell(text=text, row=r_idx, col=c_idx, colspan=cs, rowspan=rs))
                 for dr in range(rs):
                     for dc in range(cs):
                         rr, cc = r_idx + dr, c_idx + dc
-                        if rr < num_rows and cc < max_cols + 8:
+                        if rr < num_rows and cc < grid_width:
                             occupied[rr][cc] = True
                 c_idx += cs
 
