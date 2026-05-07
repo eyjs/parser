@@ -1,4 +1,4 @@
-"""Tests for SSE heartbeat and connection timeout (task-005)."""
+"""Tests for SSE heartbeat and idle-disconnect behaviour."""
 
 from __future__ import annotations
 
@@ -10,7 +10,22 @@ from unittest.mock import patch
 
 import pytest
 
-from docforge.web.sse import ProgressTracker, _MAX_CONNECTION_SECONDS
+from docforge.web.sse import ProgressTracker, _MAX_IDLE_HEARTBEATS
+
+
+def _parse_named_event(chunk: str) -> tuple[str, dict] | None:
+    """Parse a named SSE event chunk into (event_type, payload)."""
+    lines = chunk.strip().split("\n")
+    event_type = ""
+    data_line = ""
+    for line in lines:
+        if line.startswith("event: "):
+            event_type = line[len("event: "):]
+        elif line.startswith("data: "):
+            data_line = line[len("data: "):]
+    if event_type and data_line:
+        return event_type, json.loads(data_line)
+    return None
 
 
 class TestHeartbeat:
@@ -20,8 +35,6 @@ class TestHeartbeat:
         """When no events arrive within the queue timeout, a heartbeat comment is emitted."""
         tracker = ProgressTracker()
 
-        # Push done after a tiny delay so the stream eventually terminates,
-        # but use a very short queue timeout via monkeypatch to trigger heartbeat.
         def _delayed_done():
             time.sleep(0.2)
             tracker.mark_done()
@@ -29,21 +42,16 @@ class TestHeartbeat:
         t = threading.Thread(target=_delayed_done, daemon=True)
         t.start()
 
-        # Collect chunks but use a modified stream that has a shorter timeout
-        # by temporarily patching _queue.get to use a very small timeout.
         original_get = tracker._queue.get
-        call_count = [0]
 
         def _short_timeout_get(timeout=30):
-            call_count[0] += 1
-            return original_get(timeout=0.05)  # 50ms instead of 30s
+            return original_get(timeout=0.05)
 
         with patch.object(tracker._queue, "get", side_effect=_short_timeout_get):
             chunks = list(tracker.stream())
 
         t.join(timeout=5)
 
-        # At least one heartbeat should have been emitted
         heartbeats = [c for c in chunks if c.startswith(": heartbeat")]
         assert len(heartbeats) >= 1
 
@@ -51,20 +59,12 @@ class TestHeartbeat:
         """Heartbeat must use SSE comment format ': heartbeat\\n\\n'."""
         tracker = ProgressTracker()
 
-        # Directly test the format by triggering a queue.Empty
-        original_get = tracker._queue.get
-
-        def _always_empty(timeout=30):
-            raise queue.Empty
-
-        # Push nothing, mark done after first heartbeat
         call_count = [0]
 
         def _empty_then_done(timeout=30):
             call_count[0] += 1
             if call_count[0] == 1:
                 raise queue.Empty
-            # On second call, simulate done
             tracker._done.set()
             return None
 
@@ -74,21 +74,21 @@ class TestHeartbeat:
         assert len(chunks) == 1
         assert chunks[0] == ": heartbeat\n\n"
 
-    def test_normal_events_then_done(self) -> None:
-        """Normal events should be yielded as data lines, not as comments."""
+    def test_normal_events_use_named_sse_format(self) -> None:
+        """Normal events should be yielded as named SSE events."""
         tracker = ProgressTracker()
         tracker.push("profiling", {"pct": 5, "message": "start"})
         tracker.push("done", {"pct": 100, "message": "finished"})
         tracker.mark_done()
 
         chunks = list(tracker.stream())
-        # Should have 2 data events (profiling + done), no heartbeat
-        data_chunks = [c for c in chunks if c.startswith("data:")]
-        assert len(data_chunks) == 2
+        named_chunks = [c for c in chunks if c.startswith("event:")]
+        assert len(named_chunks) == 2
 
-        # Verify first event
-        first = json.loads(data_chunks[0].replace("data: ", "").strip())
-        assert first["event"] == "profiling"
+        parsed = _parse_named_event(named_chunks[0])
+        assert parsed is not None
+        assert parsed[0] == "profiling"
+        assert parsed[1]["pct"] == 5
 
     def test_no_heartbeat_when_events_flow(self) -> None:
         """When events arrive promptly, no heartbeat comments are emitted."""
@@ -101,39 +101,87 @@ class TestHeartbeat:
         heartbeats = [c for c in chunks if c.startswith(": heartbeat")]
         assert len(heartbeats) == 0
 
-
-class TestMaxConnectionTimeout:
-    """Verify that SSE connections are closed after _MAX_CONNECTION_SECONDS."""
-
-    def test_stream_closes_after_max_duration(self) -> None:
-        """The stream must terminate once max connection time elapses."""
+    def test_idle_counter_resets_on_real_event(self) -> None:
+        """A real event between heartbeats must reset the idle counter."""
         tracker = ProgressTracker()
 
-        # Patch time.monotonic to simulate elapsed time
-        start_time = 1000.0
         call_count = [0]
 
-        def _fake_monotonic():
+        def _interleaved(timeout=30):
             call_count[0] += 1
-            if call_count[0] == 1:
-                return start_time  # initial call in stream()
-            # After first iteration, jump past the limit
-            return start_time + _MAX_CONNECTION_SECONDS + 1
+            if call_count[0] <= 3:
+                raise queue.Empty
+            if call_count[0] == 4:
+                return {"event": "progress", "data": {"pct": 50}}
+            if call_count[0] <= 6:
+                raise queue.Empty
+            tracker._done.set()
+            return None
 
-        with patch("docforge.web.sse.time") as mock_time:
-            mock_time.monotonic = _fake_monotonic
+        with patch.object(tracker._queue, "get", side_effect=_interleaved):
             chunks = list(tracker.stream())
 
-        # Stream should have terminated without events (no data, no heartbeat)
-        assert len(chunks) == 0
+        heartbeats = [c for c in chunks if c.startswith(": heartbeat")]
+        named_chunks = [c for c in chunks if c.startswith("event:")]
+        assert len(heartbeats) == 5
+        assert len(named_chunks) == 1
 
-    def test_events_before_timeout(self) -> None:
-        """Events emitted before the timeout should be delivered normally."""
+    def test_page_progress_field_names(self) -> None:
+        """push_page should emit total_pages and completed_pages fields."""
+        tracker = ProgressTracker()
+        tracker.push_page(3, 10)
+        tracker.mark_done()
+
+        chunks = list(tracker.stream())
+        named = [c for c in chunks if c.startswith("event:")]
+        assert len(named) >= 1
+
+        parsed = _parse_named_event(named[0])
+        assert parsed is not None
+        assert parsed[0] == "page_progress"
+        assert parsed[1]["total_pages"] == 10
+        assert parsed[1]["completed_pages"] == 3
+
+    def test_page_result_field_names(self) -> None:
+        """push_page_result should emit page_num and total_pages fields."""
+        tracker = ProgressTracker()
+        tracker.push_page_result(5, 20, "# Page 5")
+        tracker.mark_done()
+
+        chunks = list(tracker.stream())
+        named = [c for c in chunks if c.startswith("event:")]
+        assert len(named) >= 1
+
+        parsed = _parse_named_event(named[0])
+        assert parsed is not None
+        assert parsed[0] == "page_result"
+        assert parsed[1]["page_num"] == 5
+        assert parsed[1]["total_pages"] == 20
+        assert parsed[1]["markdown"] == "# Page 5"
+
+
+class TestMaxIdleDisconnect:
+    """Verify that SSE connections close after too many idle heartbeats."""
+
+    def test_stream_closes_after_max_idle_heartbeats(self) -> None:
+        """The stream must terminate after _MAX_IDLE_HEARTBEATS consecutive heartbeats."""
+        tracker = ProgressTracker()
+
+        def _always_empty(timeout=30):
+            raise queue.Empty
+
+        with patch.object(tracker._queue, "get", side_effect=_always_empty):
+            chunks = list(tracker.stream())
+
+        heartbeats = [c for c in chunks if c.startswith(": heartbeat")]
+        assert len(heartbeats) == _MAX_IDLE_HEARTBEATS - 1
+
+    def test_events_before_idle_limit(self) -> None:
+        """Events emitted normally should not trigger idle disconnect."""
         tracker = ProgressTracker()
         tracker.push("profiling", {"pct": 5, "message": "start"})
         tracker.mark_done()
 
-        # With default timeout (600s), events should flow normally
         chunks = list(tracker.stream())
-        data_chunks = [c for c in chunks if c.startswith("data:")]
-        assert len(data_chunks) == 1
+        named_chunks = [c for c in chunks if c.startswith("event:")]
+        assert len(named_chunks) == 1

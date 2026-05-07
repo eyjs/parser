@@ -78,6 +78,8 @@ async function onFilesSelected(files: File[]) {
       activeParseTasks.value = next
       taskState.connect()
     }
+
+    history.fetchHistory()
   } catch (e) {
     uploadError.value = e instanceof Error ? e.message : '업로드 중 오류가 발생했습니다.'
   }

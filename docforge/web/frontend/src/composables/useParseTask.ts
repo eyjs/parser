@@ -177,9 +177,10 @@ export function useParseTask(
     // Fallback for unnamed SSE events (default type 'message')
     eventSource.addEventListener('message', (event) => {
       try {
-        const data = JSON.parse((event as MessageEvent).data) as Record<string, unknown>
-        const eventType = (data.event as SSEEventType) || 'progress'
-        handleEvent(eventType, data)
+        const raw = JSON.parse((event as MessageEvent).data) as Record<string, unknown>
+        const eventType = (raw.event as SSEEventType) || 'progress'
+        const payload = (raw.data as Record<string, unknown>) ?? raw
+        handleEvent(eventType, payload)
       } catch {
         // Ignore malformed events
       }

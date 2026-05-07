@@ -6,7 +6,6 @@ import json
 import logging
 import queue
 import threading
-import time
 from typing import Generator, Optional
 
 from docforge.web.task_state import TaskRegistry, registry as _default_registry
@@ -38,8 +37,9 @@ _STAGE_PCT: dict[str, int] = {
     EVT_DONE: 100,
 }
 
-# Maximum duration (seconds) a single SSE connection may stay open.
-_MAX_CONNECTION_SECONDS = 600
+# After this many consecutive heartbeats with no real events, assume the
+# producer thread is dead and close the connection.  30s × 20 = 10 minutes.
+_MAX_IDLE_HEARTBEATS = 20
 
 
 class ProgressTracker:
@@ -101,8 +101,8 @@ class ProgressTracker:
         self.push(
             EVT_PAGE,
             {
-                "page": page_num,
-                "total": total_pages,
+                "total_pages": total_pages,
+                "completed_pages": page_num,
                 "pct": pct,
                 "message": message or f"{page_num}/{total_pages} 페이지 처리 중",
             },
@@ -113,8 +113,8 @@ class ProgressTracker:
         self.push(
             EVT_PAGE_RESULT,
             {
-                "page": page_num,
-                "total": total_pages,
+                "page_num": page_num,
+                "total_pages": total_pages,
                 "markdown": markdown,
             },
         )
@@ -138,24 +138,27 @@ class ProgressTracker:
 
         Heartbeat comments (``:``) are emitted every 30 seconds of
         inactivity to keep the connection alive and detect client
-        disconnects. The connection is forcibly closed after
-        ``_MAX_CONNECTION_SECONDS`` (default 600s / 10 minutes).
+        disconnects.  If ``_MAX_IDLE_HEARTBEATS`` consecutive heartbeats
+        are sent without any real event, the producer is presumed dead
+        and the connection is closed.
         """
-        start = time.monotonic()
+        idle_count = 0
         while not self._done.is_set() or not self._queue.empty():
-            # Enforce maximum connection duration
-            if time.monotonic() - start > _MAX_CONNECTION_SECONDS:
-                logger.debug("SSE connection exceeded max duration (%ds), closing", _MAX_CONNECTION_SECONDS)
-                break
             try:
                 item = self._queue.get(timeout=30)
             except queue.Empty:
-                # 30 seconds with no events -- send SSE comment heartbeat
+                idle_count += 1
+                if idle_count >= _MAX_IDLE_HEARTBEATS:
+                    logger.warning("SSE: %d consecutive heartbeats with no events, closing", idle_count)
+                    break
                 yield ": heartbeat\n\n"
                 continue
             if item is None:
                 break
-            yield f"data: {json.dumps(item)}\n\n"
+            idle_count = 0
+            event_type = item.get("event", "progress")
+            payload = item.get("data", item)
+            yield f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
 
 
 # ---------------------------------------------------------------------------

@@ -46,7 +46,7 @@ class TestApplyEvent:
     def test_page_progress_advances_state(self) -> None:
         reg = TaskRegistry()
         reg.create("t1", "doc.pdf")
-        reg.apply_event("t1", "page_progress", {"page": 3, "total": 10, "pct": 35})
+        reg.apply_event("t1", "page_progress", {"completed_pages": 3, "total_pages": 10, "pct": 35})
         s = reg.get("t1")
         assert s.completed_pages == 3
         assert s.total_pages == 10
@@ -57,8 +57,8 @@ class TestApplyEvent:
     def test_page_progress_uses_max_for_idempotency(self) -> None:
         reg = TaskRegistry()
         reg.create("t1", "doc.pdf")
-        reg.apply_event("t1", "page_progress", {"page": 5, "total": 10, "pct": 50})
-        reg.apply_event("t1", "page_progress", {"page": 3, "total": 10, "pct": 30})
+        reg.apply_event("t1", "page_progress", {"completed_pages": 5, "total_pages": 10, "pct": 50})
+        reg.apply_event("t1", "page_progress", {"completed_pages": 3, "total_pages": 10, "pct": 30})
         s = reg.get("t1")
         # Out-of-order events must not regress progress
         assert s.completed_pages == 5
@@ -66,7 +66,7 @@ class TestApplyEvent:
     def test_page_result_stores_markdown(self) -> None:
         reg = TaskRegistry()
         reg.create("t1", "doc.pdf")
-        reg.apply_event("t1", "page_result", {"page": 2, "total": 10, "markdown": "# hi"})
+        reg.apply_event("t1", "page_result", {"page_num": 2, "total_pages": 10, "markdown": "# hi"})
         s = reg.get("t1")
         assert s.page_markdowns[2] == "# hi"
         assert s.total_pages == 10
@@ -100,7 +100,7 @@ class TestApplyEvent:
     def test_apply_event_on_missing_task_is_noop(self) -> None:
         reg = TaskRegistry()
         # Should not raise
-        reg.apply_event("missing", "page_progress", {"page": 1, "total": 1})
+        reg.apply_event("missing", "page_progress", {"completed_pages": 1, "total_pages": 1})
 
 
 class TestListings:
@@ -140,7 +140,7 @@ class TestConcurrency:
         def worker(start: int) -> None:
             for i in range(start, start + 50):
                 reg.apply_event(
-                    "t1", "page_result", {"page": i, "total": 200, "markdown": f"p{i}"}
+                    "t1", "page_result", {"page_num": i, "total_pages": 200, "markdown": f"p{i}"}
                 )
 
         threads = [threading.Thread(target=worker, args=(i * 50 + 1,)) for i in range(4)]
@@ -179,7 +179,7 @@ class TestSerialization:
     def test_state_summary_excludes_markdown(self) -> None:
         reg = TaskRegistry()
         reg.create("t1", "doc.pdf")
-        reg.apply_event("t1", "page_result", {"page": 1, "total": 5, "markdown": "x"})
+        reg.apply_event("t1", "page_result", {"page_num": 1, "total_pages": 5, "markdown": "x"})
         d = state_summary(reg.get("t1"))
         assert "page_markdowns" not in d
         assert d["task_id"] == "t1"
@@ -189,8 +189,8 @@ class TestSerialization:
     def test_state_full_includes_completed_page_numbers(self) -> None:
         reg = TaskRegistry()
         reg.create("t1", "doc.pdf")
-        reg.apply_event("t1", "page_result", {"page": 3, "total": 5, "markdown": "x"})
-        reg.apply_event("t1", "page_result", {"page": 1, "total": 5, "markdown": "y"})
+        reg.apply_event("t1", "page_result", {"page_num": 3, "total_pages": 5, "markdown": "x"})
+        reg.apply_event("t1", "page_result", {"page_num": 1, "total_pages": 5, "markdown": "y"})
         d = state_full(reg.get("t1"))
         assert d["completed_page_numbers"] == [1, 3]
         # No markdown in summary
@@ -218,7 +218,7 @@ class TestSnapshotConcurrency:
                     reg.apply_event(
                         "t-race",
                         "page_result",
-                        {"page": i, "markdown": "x" * 64},
+                        {"page_num": i, "markdown": "x" * 64},
                     )
                 except Exception as exc:  # pragma: no cover
                     errors.append(exc)

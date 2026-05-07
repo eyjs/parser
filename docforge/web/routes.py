@@ -195,15 +195,13 @@ def api_parse_status(task_id: str) -> Response:
             if catchup_payload is not None:
                 yield f"event: catchup\ndata: {_json.dumps(catchup_payload)}\n\n"
             if record is not None and record.status == "done":
-                payload = _json.dumps({"event": EVT_DONE, "data": {"message": "완료", "pct": 100}})
-                yield f"data: {payload}\n\n"
+                yield f"event: {EVT_DONE}\ndata: {_json.dumps({'message': '완료', 'pct': 100})}\n\n"
             elif record is not None:
-                payload = _json.dumps({"event": EVT_ERROR, "data": {"message": record.error or "오류 발생", "pct": 0}})
-                yield f"data: {payload}\n\n"
+                yield f"event: {EVT_ERROR}\ndata: {_json.dumps({'message': record.error or '오류 발생', 'pct': 0})}\n\n"
             elif state is not None and state.status == "done":
-                yield f"data: {_json.dumps({'event': EVT_DONE, 'data': {'pct': 100}})}\n\n"
+                yield f"event: {EVT_DONE}\ndata: {_json.dumps({'pct': 100})}\n\n"
             elif state is not None and state.status == "error":
-                yield f"data: {_json.dumps({'event': EVT_ERROR, 'data': {'message': state.error_message or '', 'pct': 0}})}\n\n"
+                yield f"event: {EVT_ERROR}\ndata: {_json.dumps({'message': state.error_message or '', 'pct': 0})}\n\n"
 
         return Response(stream_with_context(_static_stream()), mimetype="text/event-stream")
 

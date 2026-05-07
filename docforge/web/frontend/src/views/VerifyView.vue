@@ -167,8 +167,9 @@ function onScrollToPage(page: number) {
 
     <!-- Stats -->
     <StatsGrid
-      v-if="result && result.stats"
+      v-if="result"
       :stats="result.stats"
+      :metadata="result.metadata"
       :filename="result.filename"
       :completed-at="result.completedAt"
     />

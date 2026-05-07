@@ -115,8 +115,8 @@ class TaskRegistry:
             state.last_event = {"event": event, "data": dict(data)}
 
             if event == "page_progress":
-                page = int(data.get("page") or 0)
-                total = int(data.get("total") or 0)
+                page = int(data.get("completed_pages") or 0)
+                total = int(data.get("total_pages") or 0)
                 if total > 0:
                     state.total_pages = max(state.total_pages, total)
                 if page > 0:
@@ -129,11 +129,11 @@ class TaskRegistry:
                     state.status = "running"
 
             elif event == "page_result":
-                page = data.get("page")
+                page = data.get("page_num")
                 markdown = data.get("markdown", "")
                 if isinstance(page, int) and page > 0:
                     state.page_markdowns[page] = markdown
-                total = int(data.get("total") or 0)
+                total = int(data.get("total_pages") or 0)
                 if total > 0:
                     state.total_pages = max(state.total_pages, total)
 

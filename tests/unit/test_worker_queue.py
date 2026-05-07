@@ -259,8 +259,9 @@ class TestSSEExtensions:
 
         events = list(tracker.stream())
         assert len(events) == 1
-        data = json.loads(events[0].replace("data: ", "").strip())
-        assert data["event"] == "page_result"
-        assert data["data"]["page"] == 1
-        assert data["data"]["total"] == 10
-        assert data["data"]["markdown"] == "# Page 1"
+        lines = events[0].strip().split("\n")
+        assert lines[0] == "event: page_result"
+        data = json.loads(lines[1].removeprefix("data: "))
+        assert data["page_num"] == 1
+        assert data["total_pages"] == 10
+        assert data["markdown"] == "# Page 1"

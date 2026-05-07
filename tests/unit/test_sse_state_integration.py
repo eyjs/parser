@@ -12,7 +12,7 @@ class TestTrackerRegistryIntegration:
         reg.create("t1", "doc.pdf")
         tracker = ProgressTracker(task_id="t1", registry=reg)
 
-        tracker.push("page_progress", {"page": 4, "total": 10, "pct": 40})
+        tracker.push("page_progress", {"completed_pages": 4, "total_pages": 10, "pct": 40})
 
         s = reg.get("t1")
         assert s.completed_pages == 4
@@ -56,7 +56,7 @@ class TestTrackerRegistryIntegration:
         reg.create("t1", "doc.pdf")
         tracker = ProgressTracker()  # no task_id
 
-        tracker.push("page_progress", {"page": 1, "total": 1})
+        tracker.push("page_progress", {"completed_pages": 1, "total_pages": 1})
         # registry untouched (still default state)
         s = reg.get("t1")
         assert s.completed_pages == 0

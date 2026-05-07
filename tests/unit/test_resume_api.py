@@ -40,7 +40,7 @@ class TestActiveEndpoint:
     def test_lists_only_queued_and_running(self, client) -> None:
         task_registry.create("a", "a.pdf")
         task_registry.create("b", "b.pdf")
-        task_registry.apply_event("b", "page_progress", {"page": 1, "total": 10, "pct": 20})
+        task_registry.apply_event("b", "page_progress", {"completed_pages": 1, "total_pages": 10, "pct": 20})
         task_registry.create("c", "c.pdf")
         task_registry.apply_event("c", "done", {})
 
@@ -57,8 +57,8 @@ class TestStateEndpoint:
 
     def test_returns_completed_page_numbers(self, client) -> None:
         task_registry.create("t1", "doc.pdf")
-        task_registry.apply_event("t1", "page_result", {"page": 3, "total": 5, "markdown": "x"})
-        task_registry.apply_event("t1", "page_result", {"page": 1, "total": 5, "markdown": "y"})
+        task_registry.apply_event("t1", "page_result", {"page_num": 3, "total_pages": 5, "markdown": "x"})
+        task_registry.apply_event("t1", "page_result", {"page_num": 1, "total_pages": 5, "markdown": "y"})
 
         resp = client.get("/api/parse/t1/state")
         assert resp.status_code == 200
@@ -75,8 +75,8 @@ class TestPagesEndpoint:
 
     def test_returns_sorted_completed(self, client) -> None:
         task_registry.create("t1", "doc.pdf")
-        task_registry.apply_event("t1", "page_result", {"page": 5, "total": 10, "markdown": "x"})
-        task_registry.apply_event("t1", "page_result", {"page": 2, "total": 10, "markdown": "y"})
+        task_registry.apply_event("t1", "page_result", {"page_num": 5, "total_pages": 10, "markdown": "x"})
+        task_registry.apply_event("t1", "page_result", {"page_num": 2, "total_pages": 10, "markdown": "y"})
 
         resp = client.get("/api/parse/t1/pages")
         body = json.loads(resp.data)
@@ -99,7 +99,7 @@ class TestPageEndpoint:
 
     def test_returns_markdown(self, client) -> None:
         task_registry.create("t1", "doc.pdf")
-        task_registry.apply_event("t1", "page_result", {"page": 7, "total": 10, "markdown": "## hello"})
+        task_registry.apply_event("t1", "page_result", {"page_num": 7, "total_pages": 10, "markdown": "## hello"})
 
         resp = client.get("/api/parse/t1/page/7")
         assert resp.status_code == 200
@@ -110,7 +110,7 @@ class TestPageEndpoint:
 class TestSseCatchupReplay:
     def test_catchup_event_emitted_for_known_task(self, client) -> None:
         task_registry.create("t1", "doc.pdf")
-        task_registry.apply_event("t1", "page_result", {"page": 1, "total": 3, "markdown": "x"})
+        task_registry.apply_event("t1", "page_result", {"page_num": 1, "total_pages": 3, "markdown": "x"})
         task_registry.apply_event("t1", "done", {})
 
         resp = client.get("/api/parse/t1/status")
