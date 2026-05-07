@@ -27,7 +27,7 @@ from docforge.domain.models import (
     Table,
     TextBlock,
 )
-from docforge.domain.value_objects import ImageQualityPolicy
+from docforge.domain.value_objects import ImageQualityPolicy, PageStrategy
 from docforge.infrastructure.config import ParserConfig
 from docforge.processing import (
     column_detector,
@@ -44,6 +44,10 @@ from docforge.processing.llm_fallback_router import run_llm_fallback, should_inv
 from docforge.processing.noise_detector import LearnedPatterns
 from docforge.processing.table_quality_scorer import score_table
 from docforge.usecases.ocr_factory import create_ocr_engine
+
+import logging as _logging
+
+_page_logger = _logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -67,6 +71,11 @@ class PageResult:
     ocr_used: bool
     llm_record: LLMFallbackRecord | None = None
     region_vlm_records: tuple[RegionVLMRecord, ...] = ()
+    # Phase 3: block-level retry statistics
+    blocks_retried: int = 0
+    blocks_fallback_ocr: int = 0
+    blocks_fallback_vlm: int = 0
+    avg_block_quality: float = 1.0
 
 
 class PageProcessor:
@@ -110,6 +119,7 @@ class PageProcessor:
         ocr_semaphore: threading.Semaphore,
         log_fn: "Callable[[str], None]",
         total_pages: int,
+        page_strategy: PageStrategy | None = None,
     ) -> PageResult:
         """Process a single page. Opens its own doc/plumber handles."""
         from docforge.adapters.image_converter import pil_to_raw_image
@@ -217,6 +227,10 @@ class PageProcessor:
                             reader, doc, page_idx, ocr_engine,
                             scanned_preprocessor, quality_policy,
                         )
+                        # Phase 2: OCR multi-pass -- VLM fallback for low-confidence blocks
+                        ocr_blocks = self._apply_ocr_multipass(
+                            ocr_blocks, reader, doc, page_idx, width, height,
+                        )
                         blocks.extend(ocr_blocks)
                         if ocr_blocks:
                             page_ocr_used = True
@@ -230,6 +244,10 @@ class PageProcessor:
                         ocr_blocks, page_gate_result = self._run_ocr(
                             reader, doc, page_idx, ocr_engine,
                             scanned_preprocessor, quality_policy,
+                        )
+                        # Phase 2: OCR multi-pass -- VLM fallback for low-confidence blocks
+                        ocr_blocks = self._apply_ocr_multipass(
+                            ocr_blocks, reader, doc, page_idx, width, height,
                         )
                         for ob in ocr_blocks:
                             if not any(_blocks_overlap(ob, db) for db in blocks):
@@ -251,12 +269,22 @@ class PageProcessor:
             )
 
             merged_blocks = self._classify_and_merge(clean_blocks, effective_type)
+
+            # Phase 2: Alternative heading detection for OCR pages
+            # where font_size=0.0 makes text_structurer blind.
+            layout_blocks = self._maybe_detect_layout(
+                reader, doc, page_idx, page_type=effective_type,
+            )
+            if page_ocr_used:
+                merged_blocks = self._apply_heading_detector(
+                    merged_blocks, layout_blocks, height,
+                )
+
             merged_blocks = assign_hierarchy(merged_blocks, page_num=page_idx + 1)
 
             # Phase B-1: layout-detector boost (opt-in via config flag).
             # Single-pass merge_and_label avoids re-scanning the N×M IoU
             # grid when caption_matcher later needs the label map.
-            layout_blocks = self._maybe_detect_layout(reader, doc, page_idx)
             layout_label_map: dict[str, str] = {}
             if layout_blocks:
                 from docforge.processing.layout_router import merge_and_label
@@ -267,20 +295,39 @@ class PageProcessor:
                     iou_threshold=config.layout_iou_threshold,
                 )
 
+            # Phase 2: Block normalization + confidence-based routing.
+            # Produces NormalizedBlock list -> RoutingDecision list.
+            # Routing decisions drive downstream dispatch (VLM crop,
+            # chart analysis, etc.) via _dispatch_routing_decisions().
+            routing_records = self._run_normalization_and_routing(
+                merged_blocks, layout_blocks, page_idx, width, height,
+                reader, doc,
+            )
+
+            # Phase 3: Adaptive Retry Loop -- block-level quality
+            # verification + selective retry for garbled blocks.
+            retry_stats = {
+                "blocks_retried": 0,
+                "blocks_fallback_ocr": 0,
+                "blocks_fallback_vlm": 0,
+                "avg_block_quality": 1.0,
+            }
+            if page_strategy and page_strategy.primary_method != "skip":
+                merged_blocks, retry_stats = self._adaptive_retry(
+                    merged_blocks, page_strategy, page_idx,
+                    reader, doc, ocr_semaphore, width, height,
+                )
+
             page_tables = table_extractor.extract_from_page(
                 plumber_doc, page_idx, page_width=width, page_height=height,
             )
 
-            if effective_type == PageType.SCANNED and not page_tables:
-                from docforge.adapters.paddle_table import PaddleTableExtractor
+            # Phase 2: PaddleTable removed. Scanned pages without
+            # pdfplumber tables rely on VLM crop-and-correct via
+            # _maybe_route_to_vlm below.
 
-                paddle_tables = PaddleTableExtractor()
-                if paddle_tables.is_available():
-                    image = reader.render_page_image(doc, page_idx, config.dpi)
-                    page_tables = paddle_tables.extract_from_image(image)
-
-            page_tables = self._maybe_paddle_fallback(
-                page_tables, page_type, reader, doc, page_idx,
+            page_tables = self._maybe_vlm_table_fallback(
+                page_tables, effective_type, reader, doc, page_idx,
             )
 
             page_tables = self._filter_leader_dots(page_tables)
@@ -303,12 +350,18 @@ class PageProcessor:
 
             # Phase B-2+: VLM image captioning — fills alt_text for
             # images that have actual bytes, using describe_image().
+            # Phase 2: enriched input -- pass block_type hints and OCR
+            # context from routing records for chart/table-aware prompts.
             if page_images and self._llm_engine is not None and config.image_extraction_enabled:
                 from docforge.processing.image_vlm_captioner import caption_images
+
+                bt_hints, ctx_texts = self._build_captioner_context(routing_records)
                 page_images = caption_images(
                     page_images,
                     self._llm_engine,
                     prompt_hint=config.llm_domain_hint,
+                    block_type_hints=bt_hints,
+                    context_texts=ctx_texts,
                 )
 
             page_content = PageContent(
@@ -352,6 +405,10 @@ class PageProcessor:
                 ocr_used=page_ocr_used,
                 llm_record=llm_record,
                 region_vlm_records=tuple(region_vlm_records),
+                blocks_retried=retry_stats["blocks_retried"],
+                blocks_fallback_ocr=retry_stats["blocks_fallback_ocr"],
+                blocks_fallback_vlm=retry_stats["blocks_fallback_vlm"],
+                avg_block_quality=retry_stats["avg_block_quality"],
             )
         finally:
             reader.close(doc)
@@ -390,21 +447,50 @@ class PageProcessor:
         reader: PyMuPDFReader,
         doc: object,
         page_idx: int,
+        page_type: PageType = PageType.DIGITAL,
     ):
-        """Run layout detection if enabled and the backend is available."""
+        """Run layout detection if applicable.
+
+        **Phase 2 -- Surya Conditional Activation**:
+        - ``config.layout_detection_enabled`` acts as a global kill-switch.
+          When ``False`` (default), layout detection is always off.
+        - When ``True``, layout detection is further gated by page type:
+          only ``SCANNED`` and ``MIXED`` pages trigger Surya.  Digital
+          pages already have reliable font/structure metadata and do not
+          benefit from the extra cost.
+        """
+        import logging as _logging
+
+        _logger = _logging.getLogger(__name__)
+
         from docforge.adapters.image_converter import pil_to_raw_image
 
         config = self._config
         detector = self._layout_detector
+
+        # Global kill-switch
         if not config.layout_detection_enabled or detector is None:
             return []
         if not detector.is_available():
             return []
+
+        # Phase 2: conditional activation -- SCANNED/MIXED only
+        if page_type not in (PageType.SCANNED, PageType.MIXED):
+            _logger.debug(
+                "Skipping layout detection for %s page (page_idx=%d)",
+                page_type.value,
+                page_idx,
+            )
+            return []
+
         try:
             image = reader.render_page_image(doc, page_idx, config.dpi)
             raw_img = pil_to_raw_image(image)
             return detector.detect(raw_img, page_num=page_idx + 1)
         except Exception:  # pragma: no cover - defensive
+            _logger.warning(
+                "Layout detection failed for page %d", page_idx, exc_info=True,
+            )
             return []
 
     def _maybe_extract_images(
@@ -494,7 +580,7 @@ class PageProcessor:
         )
         return [_classify(b) for b in merged_first]
 
-    def _maybe_paddle_fallback(
+    def _maybe_vlm_table_fallback(
         self,
         page_tables: list[Table],
         page_type: PageType,
@@ -502,42 +588,348 @@ class PageProcessor:
         doc: object,
         page_idx: int,
     ) -> list[Table]:
+        """Apply table quality check and flag low-quality tables for VLM re-extraction.
+
+        Phase 2 change: PaddleTable fallback removed. Low-quality tables
+        are now handled by ``_maybe_route_to_vlm`` downstream (VLM
+        crop-and-correct). This method just ensures quality scoring runs
+        on all page types (except NOISE) so the downstream VLM router
+        gets accurate quality signals.
+        """
+        import logging as _logging
+
+        _logger = _logging.getLogger(__name__)
+
         config = self._config
-        if not (
-            config.region_vlm_paddle_fallback
-            and page_type in (PageType.DIGITAL, PageType.MIXED)
-            and page_tables
-        ):
+        # Phase 2: extend quality check to all page types except NOISE
+        if page_type == PageType.NOISE or not page_tables:
             return page_tables
 
         weights = config.table_config.scorer_weights
         threshold = config.table_quality_threshold
 
-        has_low_quality = any(
-            score_table(tbl, weights) < threshold for tbl in page_tables
-        )
-        if not has_low_quality:
-            return page_tables
-
-        from docforge.adapters.paddle_table import PaddleTableExtractor
-
-        paddle_ext = PaddleTableExtractor()
-        if not paddle_ext.is_available():
-            return page_tables
-
-        img = reader.render_page_image(doc, page_idx, config.dpi)
-        paddle_results = paddle_ext.extract_from_image(img)
-
-        improved: list[Table] = []
+        result: list[Table] = []
         for tbl in page_tables:
             tbl_score = score_table(tbl, weights)
             if tbl_score < threshold:
-                best_paddle = _find_best_overlap(tbl, paddle_results)
-                if best_paddle is not None and score_table(best_paddle, weights) > tbl_score:
-                    improved.append(best_paddle)
+                _logger.info(
+                    "Table quality %.2f < threshold %.2f on page %d -- "
+                    "will be candidate for VLM re-extraction downstream",
+                    tbl_score,
+                    threshold,
+                    page_idx + 1,
+                )
+            result.append(tbl)
+        return result
+
+    # --- Phase 2 integration helpers -----------------------------------------
+
+    def _apply_ocr_multipass(
+        self,
+        ocr_blocks: list[TextBlock],
+        reader: PyMuPDFReader,
+        doc: object,
+        page_idx: int,
+        page_width: float,
+        page_height: float,
+    ) -> list[TextBlock]:
+        """Split OCR blocks by confidence; re-OCR low ones via VLM fallback.
+
+        Graceful degradation: when no VLM engine is available, returns the
+        original blocks unchanged.
+        """
+        if not ocr_blocks:
+            return ocr_blocks
+        try:
+            from docforge.processing.ocr_multipass import (
+                evaluate_ocr_blocks,
+                fallback_ocr_via_vlm,
+            )
+
+            acceptable, low = evaluate_ocr_blocks(ocr_blocks)
+            if not low:
+                return ocr_blocks
+            if self._llm_engine is None:
+                _page_logger.debug(
+                    "OCR multipass: %d low-confidence blocks but no VLM engine",
+                    len(low),
+                )
+                return acceptable + low
+
+            from docforge.adapters.image_converter import pil_to_raw_image
+
+            image = reader.render_page_image(doc, page_idx, self._config.dpi)
+            raw_img = pil_to_raw_image(image)
+            # Convert to PNG bytes for roi_cropper
+            import io
+            from PIL import Image as _PILImage
+
+            buf = io.BytesIO()
+            if hasattr(image, "save"):
+                image.save(buf, format="PNG")
+            else:
+                _PILImage.fromarray(raw_img.data).save(buf, format="PNG")
+            page_image_bytes = buf.getvalue()
+
+            corrected = fallback_ocr_via_vlm(
+                low,
+                self._llm_engine,
+                page_image_bytes,
+                int(page_width),
+                int(page_height),
+            )
+            return acceptable + corrected
+        except Exception:
+            _page_logger.warning(
+                "OCR multipass failed for page %d, using original blocks",
+                page_idx,
+                exc_info=True,
+            )
+            return ocr_blocks
+
+    def _apply_heading_detector(
+        self,
+        blocks: list[TextBlock],
+        layout_blocks: list,
+        page_height: float,
+    ) -> list[TextBlock]:
+        """Run alternative heading detection for OCR pages (font_size=0.0).
+
+        Graceful degradation: returns original blocks on any error.
+        """
+        try:
+            from docforge.processing.heading_detector import detect_headings_ocr
+
+            return detect_headings_ocr(blocks, layout_blocks or None, page_height)
+        except Exception:
+            _page_logger.warning(
+                "Heading detector failed, using original blocks",
+                exc_info=True,
+            )
+            return blocks
+
+    def _run_normalization_and_routing(
+        self,
+        merged_blocks: list[TextBlock],
+        layout_blocks: list,
+        page_idx: int,
+        page_width: float,
+        page_height: float,
+        reader: PyMuPDFReader,
+        doc: object,
+    ) -> list:
+        """Normalize blocks and apply confidence-based routing rules.
+
+        Returns a list of ``RoutingDecision`` objects for downstream
+        dispatch. On failure, returns an empty list (graceful degradation).
+        """
+        try:
+            from docforge.processing.block_normalizer import (
+                merge_normalized,
+                normalize_layout_block,
+                normalize_text_block,
+            )
+            from docforge.processing.layout_router import route_blocks
+
+            page_num = page_idx + 1
+
+            # Step 1: Normalize text blocks
+            norm_text = [
+                normalize_text_block(tb, page_num=page_num)
+                for tb in merged_blocks
+            ]
+
+            # Step 2: Normalize layout blocks (if any)
+            norm_layout = [
+                normalize_layout_block(lb)
+                for lb in (layout_blocks or [])
+            ]
+
+            # Step 3: Merge via IoU matching
+            norm_merged = merge_normalized(
+                norm_text,
+                norm_layout,
+                iou_threshold=self._config.layout_iou_threshold,
+            )
+
+            # Step 4: Apply routing rules
+            decisions = route_blocks(norm_merged)
+
+            _page_logger.info(
+                "Phase 2 routing: page=%d, blocks=%d, decisions=%d",
+                page_num,
+                len(norm_merged),
+                len(decisions),
+            )
+
+            # Step 5: Dispatch VLM-requiring decisions
+            self._dispatch_routing_decisions(
+                decisions, reader, doc, page_idx, page_width, page_height,
+            )
+
+            return decisions
+        except Exception:
+            _page_logger.warning(
+                "Block normalization/routing failed for page %d",
+                page_idx,
+                exc_info=True,
+            )
+            return []
+
+    def _dispatch_routing_decisions(
+        self,
+        decisions: list,
+        reader: PyMuPDFReader,
+        doc: object,
+        page_idx: int,
+        page_width: float,
+        page_height: float,
+    ) -> None:
+        """Process routing decisions that require VLM invocation.
+
+        Actions handled:
+        - ``vlm_crop``: Crop table region, send to VLM for re-extraction.
+        - ``vlm_chart``: Crop chart region, send enriched prompt to VLM.
+        - ``vlm_caption``: Crop figure region, generate alt-text.
+        - ``table_parser``, ``markdown``, ``fallback``: No additional work
+          (handled by existing pipeline paths).
+
+        Results are logged for audit. This method does not modify the
+        downstream ``page_tables`` or ``merged_blocks`` -- it enriches the
+        routing records for reporting and future use.
+        """
+        if not decisions or self._llm_engine is None:
+            return
+
+        vlm_actions = {"vlm_crop", "vlm_chart", "vlm_caption"}
+        vlm_decisions = [d for d in decisions if d.action in vlm_actions]
+        if not vlm_decisions:
+            return
+
+        try:
+            from docforge.processing.roi_cropper import crop_region_from_image
+
+            # Render page image once for all crops
+            from docforge.adapters.image_converter import pil_to_raw_image
+
+            image = reader.render_page_image(doc, page_idx, self._config.dpi)
+            import io
+            from PIL import Image as _PILImage
+
+            buf = io.BytesIO()
+            if hasattr(image, "save"):
+                image.save(buf, format="PNG")
+            else:
+                raw_img = pil_to_raw_image(image)
+                _PILImage.fromarray(raw_img.data).save(buf, format="PNG")
+            page_image_bytes = buf.getvalue()
+
+            for decision in vlm_decisions:
+                block = decision.block
+                cropped = crop_region_from_image(
+                    page_image_bytes,
+                    int(page_width),
+                    int(page_height),
+                    block.bbox,
+                    padding=10,
+                )
+                if not cropped:
+                    _page_logger.warning(
+                        "ROI crop empty for block %s (action=%s)",
+                        block.block_id,
+                        decision.action,
+                    )
                     continue
-            improved.append(tbl)
-        return improved
+
+                if decision.action == "vlm_chart":
+                    # Enriched input: image + OCR context text
+                    result = self._llm_engine.describe_image(
+                        image_data=cropped,
+                        format="png",
+                        prompt_hint=self._config.llm_domain_hint,
+                        block_type="chart",
+                        context_text=block.text[:500] if block.text else "",
+                        bbox_info=f"[{block.bbox.x0:.1f},{block.bbox.y0:.1f},"
+                                  f"{block.bbox.x1:.1f},{block.bbox.y1:.1f}]",
+                    )
+                    _page_logger.info(
+                        "VLM chart analysis: block=%s, result_len=%d",
+                        block.block_id,
+                        len(result) if result else 0,
+                    )
+                elif decision.action == "vlm_caption":
+                    result = self._llm_engine.describe_image(
+                        image_data=cropped,
+                        format="png",
+                        prompt_hint=self._config.llm_domain_hint,
+                        block_type="figure",
+                    )
+                    _page_logger.info(
+                        "VLM caption: block=%s, result_len=%d",
+                        block.block_id,
+                        len(result) if result else 0,
+                    )
+                elif decision.action == "vlm_crop":
+                    # Table VLM re-extraction -- handled downstream by
+                    # _maybe_route_to_vlm. Log for audit only.
+                    _page_logger.info(
+                        "VLM crop routed: block=%s, conf=%.2f",
+                        block.block_id,
+                        decision.confidence,
+                    )
+        except Exception:
+            _page_logger.warning(
+                "Routing dispatch failed for page %d",
+                page_idx,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _build_captioner_context(
+        routing_records: list,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Extract block_type hints and context texts from routing decisions.
+
+        Returns ``(block_type_hints, context_texts)`` dicts keyed by block_id
+        for use by ``caption_images()``.
+        """
+        bt_hints: dict[str, str] = {}
+        ctx_texts: dict[str, str] = {}
+        for decision in routing_records:
+            block = decision.block
+            if decision.action == "vlm_chart":
+                bt_hints[block.block_id] = "chart"
+                if block.text:
+                    ctx_texts[block.block_id] = block.text[:500]
+            elif decision.action == "vlm_caption":
+                bt_hints[block.block_id] = "figure"
+            elif decision.action == "vlm_crop":
+                bt_hints[block.block_id] = "table"
+        return bt_hints, ctx_texts
+
+    # --- Phase 3: Adaptive Retry Loop ----------------------------------------
+
+    def _adaptive_retry(
+        self,
+        blocks: list[TextBlock],
+        page_strategy: PageStrategy,
+        page_idx: int,
+        reader: PyMuPDFReader,
+        doc: object,
+        ocr_semaphore: "threading.Semaphore",
+        width: float,
+        height: float,
+    ) -> tuple[list[TextBlock], dict]:
+        """Delegate to processing.adaptive_retry module."""
+        from docforge.processing.adaptive_retry import adaptive_retry
+
+        return adaptive_retry(
+            blocks, page_strategy, page_idx,
+            reader, doc, ocr_semaphore, width, height,
+            self._config, self._llm_engine,
+        )
+
+    # --- existing internal helpers -------------------------------------------
 
     def _filter_leader_dots(self, page_tables: list[Table]) -> list[Table]:
         config = self._config

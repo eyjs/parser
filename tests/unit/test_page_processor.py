@@ -115,3 +115,121 @@ class TestPageResult:
         except FrozenInstanceError:
             return
         raise AssertionError("PageResult should be frozen")
+
+
+# ---- Phase 2: New helper method tests ----
+
+
+class TestApplyHeadingDetector:
+    """_apply_heading_detector should gracefully enhance OCR blocks."""
+
+    def test_detects_heading_in_ocr_blocks(self) -> None:
+        proc = _make_processor()
+        # OCR blocks have font_size=0.0
+        ocr_block = TextBlock(
+            text="제1조 보험금의 지급",
+            bbox=BBox(50, 50, 400, 70),
+            font=FontInfo(name="AppleVision", size=0.0, is_bold=False),
+            block_type=BlockType.TEXT,
+        )
+        result = proc._apply_heading_detector([ocr_block], [], 800)
+        assert result[0].block_type == BlockType.HEADING
+
+    def test_preserves_digital_blocks(self) -> None:
+        proc = _make_processor()
+        digital_block = TextBlock(
+            text="제1조 보험금의 지급",
+            bbox=BBox(50, 50, 400, 70),
+            font=FontInfo(name="Nanum", size=12.0, is_bold=False),
+            block_type=BlockType.TEXT,
+        )
+        result = proc._apply_heading_detector([digital_block], [], 800)
+        # Should pass through unchanged (font_size > 0)
+        assert result[0].block_type == BlockType.TEXT
+
+    def test_graceful_on_empty(self) -> None:
+        proc = _make_processor()
+        result = proc._apply_heading_detector([], [], 800)
+        assert result == []
+
+
+class TestApplyOCRMultipass:
+    """_apply_ocr_multipass should split by confidence and fall back gracefully."""
+
+    def test_all_high_confidence_unchanged(self) -> None:
+        proc = _make_processor()
+        blocks = [
+            TextBlock(
+                text="good text",
+                bbox=BBox(0, 0, 100, 20),
+                font=FontInfo(name="AV", size=0.0, is_bold=False),
+                confidence=0.95,
+            ),
+        ]
+        # No VLM engine -> should return blocks unchanged
+        from unittest.mock import MagicMock
+        reader = MagicMock()
+        result = proc._apply_ocr_multipass(blocks, reader, None, 0, 100, 100)
+        assert len(result) == 1
+        assert result[0].text == "good text"
+
+    def test_empty_blocks_unchanged(self) -> None:
+        proc = _make_processor()
+        from unittest.mock import MagicMock
+        reader = MagicMock()
+        result = proc._apply_ocr_multipass([], reader, None, 0, 100, 100)
+        assert result == []
+
+
+class TestBuildCaptionerContext:
+    """_build_captioner_context should extract hints from routing decisions."""
+
+    def test_empty_records(self) -> None:
+        bt, ctx = PageProcessor._build_captioner_context([])
+        assert bt == {}
+        assert ctx == {}
+
+    def test_chart_decision_extracts_hints(self) -> None:
+        from docforge.domain.models import NormalizedBlock
+        from docforge.processing.layout_router import RoutingDecision
+
+        block = NormalizedBlock(
+            block_id="chart1",
+            bbox=BBox(0, 0, 100, 100),
+            block_type=BlockType.CHART,
+            confidence=0.9,
+            text="Sales Revenue 2024",
+            source="test",
+            page_num=1,
+        )
+        decision = RoutingDecision(
+            block=block,
+            action="vlm_chart",
+            confidence=0.9,
+            rule_matched="chart->vlm_chart",
+        )
+        bt, ctx = PageProcessor._build_captioner_context([decision])
+        assert bt == {"chart1": "chart"}
+        assert ctx == {"chart1": "Sales Revenue 2024"}
+
+    def test_figure_decision(self) -> None:
+        from docforge.domain.models import NormalizedBlock
+        from docforge.processing.layout_router import RoutingDecision
+
+        block = NormalizedBlock(
+            block_id="fig1",
+            bbox=BBox(0, 0, 100, 100),
+            block_type=BlockType.FIGURE,
+            confidence=0.8,
+            source="test",
+            page_num=1,
+        )
+        decision = RoutingDecision(
+            block=block,
+            action="vlm_caption",
+            confidence=0.8,
+            rule_matched="figure->vlm_caption",
+        )
+        bt, ctx = PageProcessor._build_captioner_context([decision])
+        assert bt == {"fig1": "figure"}
+        assert ctx == {}  # No context text for figures

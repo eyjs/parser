@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 # Progress event constants
 # ---------------------------------------------------------------------------
 
+EVT_STRATEGY_REPORT = "strategy_report"
 EVT_PROFILING = "profiling"
 EVT_NOISE_LEARNING = "noise_learning"
 EVT_PAGE = "page_progress"
@@ -28,7 +29,8 @@ EVT_PAGE_RESULT = "page_result"
 
 # 단계별 진행률(%) 기준값
 _STAGE_PCT: dict[str, int] = {
-    EVT_PROFILING: 5,
+    EVT_STRATEGY_REPORT: 3,
+    EVT_PROFILING: 8,
     EVT_NOISE_LEARNING: 15,
     EVT_TABLE_MERGING: 85,
     EVT_ASSEMBLING: 95,
@@ -146,14 +148,26 @@ class ProgressTracker:
 
 
 def progress_line_to_sse(tracker: ProgressTracker, line: str) -> None:
-    """Convert a parse_pdf progress line into an SSE event on the tracker."""
+    """Convert a parse_pdf progress line into an SSE event on the tracker.
+
+    Pipeline steps map as follows (7-step pipeline since Phase 3):
+      [1/7] Document Intelligence  -> EVT_STRATEGY_REPORT
+      [2/7] Profiling              -> EVT_PROFILING
+      [3/7] Noise Learning         -> EVT_NOISE_LEARNING
+      [4/7] Document Statistics    -> EVT_NOISE_LEARNING
+      [5/7] Page Processing        -> EVT_PAGE
+      [6/7] Cross-page Table Merge -> EVT_TABLE_MERGING
+      [7/7] Markdown Assembly      -> EVT_ASSEMBLING
+    """
     line = line.strip()
     if not line:
         return
 
-    if "[1/6]" in line:
+    if "[1/7]" in line:
+        tracker.push_stage(EVT_STRATEGY_REPORT, line)
+    elif "[2/7]" in line:
         tracker.push_stage(EVT_PROFILING, line)
-    elif "[2/6]" in line or "[3/6]" in line:
+    elif "[3/7]" in line or "[4/7]" in line:
         tracker.push_stage(EVT_NOISE_LEARNING, line)
     elif line.startswith("[page]"):
         parts = line[len("[page]"):].strip().split("/")
@@ -164,11 +178,11 @@ def progress_line_to_sse(tracker: ProgressTracker, line: str) -> None:
                 tracker.push_page(page_num, total)
             except ValueError:
                 tracker.push(EVT_PAGE, {"message": line, "pct": None})
-    elif "[4/6]" in line:
+    elif "[5/7]" in line:
         tracker.push_stage(EVT_PAGE, line)
-    elif "[5/6]" in line:
+    elif "[6/7]" in line:
         tracker.push_stage(EVT_TABLE_MERGING, line)
-    elif "[6/6]" in line:
+    elif "[7/7]" in line:
         tracker.push_stage(EVT_ASSEMBLING, line)
     elif "Done!" in line or "pages parsed" in line:
         tracker.push_stage(EVT_ASSEMBLING, line)

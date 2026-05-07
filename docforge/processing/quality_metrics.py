@@ -22,6 +22,7 @@ def calculate_metrics(
     markdown: str,
     noise_stats: NoiseStats,
     parse_time_ms: float,
+    retry_stats: dict[str, int | float] | None = None,
 ) -> ParseStats:
     """Calculate quality metrics from parsed pages and generated markdown.
 
@@ -30,6 +31,7 @@ def calculate_metrics(
         markdown: The generated markdown string.
         noise_stats: Accumulated noise removal statistics.
         parse_time_ms: Total parsing time in milliseconds.
+        retry_stats: Phase 3 block-level retry statistics (optional).
 
     Returns:
         ParseStats with all quality metrics.
@@ -57,6 +59,9 @@ def calculate_metrics(
     if non_empty_lines:
         avg_line_length = sum(len(ln) for ln in non_empty_lines) / len(non_empty_lines)
 
+    # Phase 3: block-level retry statistics
+    rs = retry_stats or {}
+
     return ParseStats(
         total_pages=total_pages,
         parsed_pages=parsed_pages,
@@ -68,6 +73,10 @@ def calculate_metrics(
         avg_line_length=round(avg_line_length, 1),
         noise_removed=noise_stats,
         parse_time_ms=round(parse_time_ms, 1),
+        blocks_retried=int(rs.get("blocks_retried", 0)),
+        blocks_fallback_ocr=int(rs.get("blocks_fallback_ocr", 0)),
+        blocks_fallback_vlm=int(rs.get("blocks_fallback_vlm", 0)),
+        avg_block_quality=float(rs.get("avg_block_quality", 1.0)),
     )
 
 

@@ -14,6 +14,7 @@ from typing import Iterable
 from docforge.domain.enums import PageType
 from docforge.domain.models import TextBlock
 from docforge.infrastructure.config import ParserConfig
+from docforge.processing.text_quality_utils import is_garbled_text as _is_garbled_text
 
 
 # Precompiled TOC patterns for page-level detection
@@ -178,34 +179,6 @@ def is_toc_page(blocks: list[TextBlock], raw_text: str) -> bool:
     )
     return right_numbered / len(blocks) >= 0.4
 
-
-def _is_garbled_text(raw_text: str) -> bool:
-    """Detect text that was extracted but is unreadable (custom font encoding)."""
-    stripped = raw_text.strip()
-    if not stripped:
-        return False
-
-    readable_count = 0
-    total_count = 0
-    for ch in stripped:
-        if ch.isspace():
-            continue
-        total_count += 1
-        if (
-            '가' <= ch <= '힣'  # Korean syllables
-            or 'ㄱ' <= ch <= 'ㆎ'  # Korean jamo
-            or 'A' <= ch <= 'Z' or 'a' <= ch <= 'z'
-            or '0' <= ch <= '9'
-            or ch in '.,;:!?()-/\\[]{}@#$%&*+=<>~`\'"'
-            or '①' <= ch <= '⑳'  # circled numbers
-            or ch in '·…―'
-        ):
-            readable_count += 1
-
-    if total_count == 0:
-        return False
-
-    return readable_count / total_count < 0.3
 
 
 def _is_toc_page(raw_text: str, threshold: float) -> bool:

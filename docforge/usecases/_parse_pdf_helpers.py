@@ -200,6 +200,7 @@ def aggregate_results(ordered_results: list[PageResult]) -> tuple[
     bool,
     list[LLMFallbackRecord],
     list[RegionVLMRecord],
+    dict[str, int | float],
 ]:
     parsed_pages: list[PageContent] = []
     all_page_tables: list[tuple[list[Table], float, float]] = []
@@ -208,6 +209,12 @@ def aggregate_results(ordered_results: list[PageResult]) -> tuple[
     ocr_actually_used = False
     llm_records: list[LLMFallbackRecord] = []
     vlm_records: list[RegionVLMRecord] = []
+
+    # Phase 3: block-level retry statistics
+    total_blocks_retried = 0
+    total_blocks_fallback_ocr = 0
+    total_blocks_fallback_vlm = 0
+    quality_scores: list[float] = []
 
     for pr in ordered_results:
         if pr.is_toc:
@@ -229,6 +236,13 @@ def aggregate_results(ordered_results: list[PageResult]) -> tuple[
             llm_records.append(pr.llm_record)
         vlm_records.extend(pr.region_vlm_records)
 
+        # Phase 3: accumulate retry stats
+        total_blocks_retried += pr.blocks_retried
+        total_blocks_fallback_ocr += pr.blocks_fallback_ocr
+        total_blocks_fallback_vlm += pr.blocks_fallback_vlm
+        if pr.avg_block_quality < 1.0:
+            quality_scores.append(pr.avg_block_quality)
+
     noise_with_toc = NoiseStats(
         headers=accumulated_noise.headers,
         footers=accumulated_noise.footers,
@@ -237,9 +251,22 @@ def aggregate_results(ordered_results: list[PageResult]) -> tuple[
         toc_entries=accumulated_noise.toc_entries,
         watermarks=accumulated_noise.watermarks,
     )
+
+    avg_block_quality = (
+        round(sum(quality_scores) / len(quality_scores), 4)
+        if quality_scores else 1.0
+    )
+    retry_stats: dict[str, int | float] = {
+        "blocks_retried": total_blocks_retried,
+        "blocks_fallback_ocr": total_blocks_fallback_ocr,
+        "blocks_fallback_vlm": total_blocks_fallback_vlm,
+        "avg_block_quality": avg_block_quality,
+    }
+
     return (
         parsed_pages, all_page_tables, noise_with_toc,
         ocr_actually_used, llm_records, vlm_records,
+        retry_stats,
     )
 
 

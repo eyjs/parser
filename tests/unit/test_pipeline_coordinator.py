@@ -27,6 +27,7 @@ class FakeProcessor:
         ocr_semaphore: threading.Semaphore,
         log_fn: Callable[[str], None],
         total_pages: int,
+        **kwargs,
     ) -> PageResult:
         with self._lock:
             self.processed_pages.append(page_idx)

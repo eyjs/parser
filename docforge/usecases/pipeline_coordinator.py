@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from docforge.domain.models import NoiseStats, PageError
+from docforge.domain.value_objects import DocumentStrategyReport
 from docforge.usecases.page_processor import PageProcessor, PageResult
 
 if TYPE_CHECKING:
@@ -37,10 +38,15 @@ class PipelineCoordinator:
         ocr_semaphore: threading.Semaphore,
         log_fn: "Callable[[str], None]",
         on_page_complete: "Callable[[PageResult], None] | None" = None,
+        strategy_report: DocumentStrategyReport | None = None,
     ) -> tuple[list[PageResult], list[PageError]]:
         """Process all pages and return ``(ordered_results, page_errors)``.
 
-        Page failures are converted to ``PageError`` entries — the
+        When ``strategy_report`` is provided, each page receives its
+        corresponding :class:`PageStrategy` for block-level adaptive
+        retry. When ``None``, falls back to legacy behaviour.
+
+        Page failures are converted to ``PageError`` entries -- the
         corresponding ``PageResult`` slot carries empty content so
         downstream aggregation is unchanged.
         """
@@ -48,12 +54,16 @@ class PipelineCoordinator:
         page_errors: list[PageError] = []
 
         def _submit(page_idx: int) -> PageResult:
+            page_strategy = None
+            if strategy_report and page_idx < len(strategy_report.pages):
+                page_strategy = strategy_report.pages[page_idx]
             return self._page_processor.process(
                 page_idx=page_idx,
                 pdf_path=pdf_path,
                 ocr_semaphore=ocr_semaphore,
                 log_fn=log_fn,
                 total_pages=total_pages,
+                page_strategy=page_strategy,
             )
 
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:

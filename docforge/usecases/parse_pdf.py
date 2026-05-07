@@ -27,8 +27,10 @@ from typing import TYPE_CHECKING
 
 from docforge.adapters.pymupdf_reader import PyMuPDFReader
 from docforge.domain.models import ParseResult
+from docforge.domain.value_objects import DocumentStrategyReport
 from docforge.infrastructure.config import ParserConfig
 from docforge.processing import markdown_assembler, quality_metrics
+from docforge.processing.document_intelligence import DocumentIntelligence
 from docforge.processing.domain_profiles import get_profile
 from docforge.usecases import _parse_pdf_helpers as _h
 from docforge.usecases.ocr_factory import create_ocr_engine
@@ -72,28 +74,33 @@ def parse_pdf(
     morpheme_analyzer = _h.build_morpheme_analyzer()
     preprocessing_available = _h.check_preprocessing()
 
-    _log("[1/6] Profiling document...")
+    # === Phase 1: Intelligence ===
+    _log("[1/7] Document Intelligence...")
+    strategy_report = _run_document_intelligence(pdf_path, _log)
+
+    # === Phase 2: Execution ===
+    _log("[2/7] Profiling document...")
     profile = profile_document(pdf_path, reader, config)
     _log(f"       Complexity: {profile.complexity.value}, "
          f"Recommended: {profile.recommended_parser}")
 
     use_ocr = force_ocr or ocr_engine.is_available()
 
-    _log("[2/6] Learning noise patterns...")
+    _log("[3/7] Learning noise patterns...")
     doc = reader.open(pdf_path)
     total_pages = reader.get_page_count(doc)
     patterns = _h.learn_noise(reader, doc, total_pages, config)
     _log(f"       Headers: {len(patterns.header_patterns)}, "
          f"Footers: {len(patterns.footer_patterns)}")
 
-    _log("[3/6] Calculating document statistics...")
+    _log("[4/7] Calculating document statistics...")
     avg_font_size, avg_line_gap = _h.doc_stats(reader, doc, total_pages)
     reader.close(doc)
 
     llm_engine = _h.build_llm_engine(config)
     layout_detector = _h.build_layout_detector(config)
 
-    _log(f"[4/6] Processing {total_pages} pages...")
+    _log(f"[5/7] Processing {total_pages} pages...")
     page_processor = PageProcessor(
         config=config,
         llm_engine=llm_engine,
@@ -115,7 +122,7 @@ def parse_pdf(
     ocr_semaphore = threading.Semaphore(config.max_ocr_workers)
 
     # Per-page early markdown emit — lets the SSE/dashboard render each
-    # page as soon as it finishes parsing instead of waiting for [6/6].
+    # page as soon as it finishes parsing instead of waiting for [7/7].
     def _emit_page_markdown(result: PageResult) -> None:
         if on_page_done is None:
             return
@@ -137,6 +144,7 @@ def parse_pdf(
     ordered_results, page_errors = coordinator.run(
         pdf_path, total_pages, ocr_semaphore, _log,
         on_page_complete=_emit_page_markdown,
+        strategy_report=strategy_report,
     )
 
     (
@@ -146,13 +154,14 @@ def parse_pdf(
         ocr_actually_used,
         llm_fallback_records,
         all_region_vlm_records,
+        retry_stats,
     ) = _h.aggregate_results(ordered_results)
 
-    _log("[5/6] Merging cross-page tables...")
+    _log("[6/7] Merging cross-page tables...")
     parsed_pages = _h.merge_cross_page_tables(parsed_pages, all_page_tables, config)
     parsed_pages = _h.promote_numbered_headings(parsed_pages)
 
-    _log("[6/6] Assembling markdown...")
+    _log("[7/7] Assembling markdown...")
     # on_page_done already fired per-page in the coordinator loop above —
     # don't double-emit here, just collect markdowns for finalization.
     page_markdowns = _h.assemble_page_markdowns(
@@ -170,7 +179,8 @@ def parse_pdf(
     markdown = markdown_assembler.finalize_markdown(page_markdowns, metadata)
     elapsed_ms = (time.time() - start_time) * 1000
     stats = quality_metrics.calculate_metrics(
-        parsed_pages, markdown, noise_with_toc, elapsed_ms
+        parsed_pages, markdown, noise_with_toc, elapsed_ms,
+        retry_stats=retry_stats,
     )
 
     warnings = quality_metrics.detect_anomalies(stats)
@@ -194,3 +204,45 @@ def parse_pdf(
         region_vlm_records=tuple(all_region_vlm_records),
         page_errors=tuple(page_errors),
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Document Intelligence helpers
+# ---------------------------------------------------------------------------
+
+
+def _run_document_intelligence(
+    pdf_path: Path,
+    log_fn: "Callable[[str], None]",
+) -> DocumentStrategyReport | None:
+    """Run pre-parse document intelligence scan.
+
+    Returns None on failure (graceful degradation -- pipeline continues
+    without per-page strategies).
+    """
+    try:
+        import fitz  # type: ignore[import-untyped]
+
+        intelligence = DocumentIntelligence()
+        with fitz.open(str(pdf_path)) as doc:
+            strategy_report = intelligence.analyze(doc)
+        _log_strategy_report(strategy_report, log_fn)
+        return strategy_report
+    except Exception:
+        logger.warning(
+            "Document Intelligence scan failed, continuing without strategies",
+            exc_info=True,
+        )
+        return None
+
+
+def _log_strategy_report(
+    report: DocumentStrategyReport,
+    log_fn: "Callable[[str], None]",
+) -> None:
+    """Print strategy report summary to console/SSE."""
+    log_fn(f"       Pages analyzed: {report.total_pages}")
+    for method, count in sorted(report.strategy_counts.items()):
+        log_fn(f"       {method}: {count} pages")
+    if report.surya_page_count > 0:
+        log_fn(f"       Surya needed: {report.surya_page_count} pages")
