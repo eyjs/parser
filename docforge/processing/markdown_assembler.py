@@ -65,7 +65,7 @@ def table_to_markdown(table: Table) -> str:
             return "\n> **Table extraction failed - manual review required**\n"
         return ""
 
-    # Build 2D grid
+    # Build 2D grid — propagate merged cell values across their span
     grid: list[list[str]] = [["" for _ in range(table.cols)] for _ in range(table.rows)]
     for cell in table.cells:
         if 0 <= cell.row < table.rows and 0 <= cell.col < table.cols:
@@ -74,7 +74,13 @@ def table_to_markdown(table: Table) -> str:
             cleaned = re.sub(r"\s{2,}", " ", cleaned)
             cleaned = re.sub(r"·{3,}", "", cleaned).strip()
             cleaned = cleaned.replace("|", "\\|")
-            grid[cell.row][cell.col] = cleaned
+            if not cleaned:
+                continue
+            row_end = min(cell.row + cell.rowspan, table.rows)
+            col_end = min(cell.col + cell.colspan, table.cols)
+            for r in range(cell.row, row_end):
+                for c in range(cell.col, col_end):
+                    grid[r][c] = cleaned
 
     if _is_junk_table(grid):
         return _table_to_text(grid)

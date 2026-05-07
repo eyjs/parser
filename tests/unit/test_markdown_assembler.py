@@ -75,6 +75,68 @@ class TestTableToMarkdown:
         md = table_to_markdown(table)
         assert "A\\|B" in md
 
+    def test_rowspan_propagation(self) -> None:
+        """Merged cell values should propagate to all spanned rows."""
+        cells = (
+            TableCell(text="구분", row=0, col=0),
+            TableCell(text="보험기간", row=0, col=1),
+            TableCell(text="가입나이", row=0, col=2),
+            TableCell(text="상해입원의료비", row=1, col=0, rowspan=2),
+            TableCell(text="1년(최초계약)", row=1, col=1),
+            TableCell(text="5~90세", row=1, col=2),
+            TableCell(text="", row=2, col=0),
+            TableCell(text="1년(갱신계약)", row=2, col=1),
+            TableCell(text="6~92세", row=2, col=2),
+        )
+        table = Table(
+            cells=cells, rows=3, cols=3,
+            bbox=BBox(x0=0, y0=0, x1=300, y1=300),
+        )
+        md = table_to_markdown(table)
+        lines = [l for l in md.split("\n") if l.startswith("|")]
+        assert len(lines) == 4  # header + separator + 2 data rows
+        assert "상해입원의료비" in lines[2]
+        assert "1년(최초계약)" in lines[2]
+        assert "상해입원의료비" in lines[3]
+        assert "1년(갱신계약)" in lines[3]
+
+    def test_colspan_propagation(self) -> None:
+        """Merged cell values should propagate across columns."""
+        cells = (
+            TableCell(text="전체 제목", row=0, col=0, colspan=3),
+            TableCell(text="A", row=1, col=0),
+            TableCell(text="B", row=1, col=1),
+            TableCell(text="C", row=1, col=2),
+        )
+        table = Table(
+            cells=cells, rows=2, cols=3,
+            bbox=BBox(x0=0, y0=0, x1=300, y1=200),
+        )
+        md = table_to_markdown(table)
+        header_line = [l for l in md.split("\n") if l.startswith("|")][0]
+        assert header_line.count("전체 제목") == 3
+
+    def test_rowspan_colspan_combined(self) -> None:
+        """Combined rowspan+colspan cell fills the full rectangular region."""
+        cells = (
+            TableCell(text="H1", row=0, col=0),
+            TableCell(text="H2", row=0, col=1),
+            TableCell(text="H3", row=0, col=2),
+            TableCell(text="병합", row=1, col=0, rowspan=2, colspan=2),
+            TableCell(text="X", row=1, col=2),
+            TableCell(text="", row=2, col=0),
+            TableCell(text="", row=2, col=1),
+            TableCell(text="Y", row=2, col=2),
+        )
+        table = Table(
+            cells=cells, rows=3, cols=3,
+            bbox=BBox(x0=0, y0=0, x1=300, y1=300),
+        )
+        md = table_to_markdown(table)
+        data_lines = [l for l in md.split("\n") if l.startswith("|")][2:]
+        assert data_lines[0].count("병합") == 2
+        assert data_lines[1].count("병합") == 2
+
     def test_needs_review_note(self) -> None:
         cells = (
             TableCell(text="H", row=0, col=0),

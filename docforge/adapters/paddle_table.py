@@ -125,39 +125,55 @@ class PaddleTableExtractor:
         """Convert PP-Structure HTML table output to domain Table model."""
         import re
 
-        # Extract rows from HTML
         rows_html = re.findall(r"<tr>(.*?)</tr>", html, re.DOTALL)
         if not rows_html:
             return None
 
+        num_rows = len(rows_html)
+        raw_rows: list[list[tuple[str, int, int]]] = []
+
+        for row_html in rows_html:
+            row_cells: list[tuple[str, int, int]] = []
+            for m in re.finditer(r"<t[dh]([^>]*)>(.+?)</t[dh]>", row_html, re.DOTALL):
+                attrs, content = m.group(1), m.group(2)
+                text = re.sub(r"<[^>]+>", "", content).strip()
+                cs_m = re.search(r'colspan\s*=\s*"?(\d+)', attrs)
+                rs_m = re.search(r'rowspan\s*=\s*"?(\d+)', attrs)
+                cs = int(cs_m.group(1)) if cs_m else 1
+                rs = int(rs_m.group(1)) if rs_m else 1
+                row_cells.append((text, cs, rs))
+            raw_rows.append(row_cells)
+
+        if not raw_rows:
+            return None
+
+        max_cols = max((sum(cs for _, cs, _ in row) for row in raw_rows), default=0)
+        occupied = [[False] * (max_cols + 8) for _ in range(num_rows)]
         cells: list[TableCell] = []
-        max_cols = 0
 
-        for r_idx, row_html in enumerate(rows_html):
-            # Match both <td> and <th> cells
-            cell_matches = re.findall(
-                r"<t[dh](?:\s+[^>]*)?>(.+?)</t[dh]>",
-                row_html,
-                re.DOTALL,
-            )
-            for c_idx, cell_text in enumerate(cell_matches):
-                # Strip HTML tags from cell content
-                clean_text = re.sub(r"<[^>]+>", "", cell_text).strip()
-                cells.append(TableCell(
-                    text=clean_text,
-                    row=r_idx,
-                    col=c_idx,
-                ))
-            max_cols = max(max_cols, len(cell_matches))
+        for r_idx, row_cells in enumerate(raw_rows):
+            c_idx = 0
+            for text, cs, rs in row_cells:
+                while c_idx < max_cols + 8 and occupied[r_idx][c_idx]:
+                    c_idx += 1
+                cells.append(TableCell(text=text, row=r_idx, col=c_idx, colspan=cs, rowspan=rs))
+                for dr in range(rs):
+                    for dc in range(cs):
+                        rr, cc = r_idx + dr, c_idx + dc
+                        if rr < num_rows and cc < max_cols + 8:
+                            occupied[rr][cc] = True
+                c_idx += cs
 
-        if not cells or len(rows_html) < 2 or max_cols < 2:
+        actual_cols = max((c.col + c.colspan for c in cells), default=0)
+
+        if not cells or num_rows < 2 or actual_cols < 2:
             return None
 
         return Table(
             cells=tuple(cells),
-            rows=len(rows_html),
-            cols=max_cols,
+            rows=num_rows,
+            cols=actual_cols,
             bbox=BBox(x0=box[0], y0=box[1], x1=box[2], y1=box[3]),
             confidence=0.8,
-            needs_review=True,  # Image-based extraction is less reliable
+            needs_review=True,
         )
