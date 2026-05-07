@@ -6,7 +6,7 @@ import atexit
 import os
 from pathlib import Path
 
-from flask import Flask, request
+from flask import Flask, Response, request
 
 
 def create_app(upload_dir: Path | None = None) -> Flask:
@@ -23,6 +23,13 @@ def create_app(upload_dir: Path | None = None) -> Flask:
 
     app.config["UPLOAD_DIR"] = str(upload_dir)
     app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100MB
+
+    # --- Cache control for JSON API responses ---
+    @app.after_request
+    def _no_cache_json(response: Response) -> Response:
+        if response.content_type and response.content_type.startswith("application/json"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     # --- CORS ---
     _register_cors(app)

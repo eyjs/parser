@@ -739,13 +739,13 @@ function updateStatus(msg) {
 // ---------------------------------------------------------------------------
 
 function loadHistory() {
-  fetch('/api/history')
+  fetch('/api/history', { cache: 'no-store' })
     .then(function (res) { return res.json(); })
     .then(function (json) {
       if (!json.success) return;
       renderHistory(json.data);
     })
-    .catch(function () {});
+    .catch(function (err) { console.error('[loadHistory]', err); });
 }
 
 /**
@@ -1011,7 +1011,7 @@ function restoreActiveTasks() {
         startQueuePolling();
       });
     })
-    .catch(function () { /* silent — best effort */ });
+    .catch(function (err) { console.error('[restoreActiveTasks]', err); });
 }
 
 /**
