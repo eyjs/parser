@@ -1,24 +1,27 @@
 <script setup lang="ts">
-import { ref, shallowRef, computed, onUnmounted } from 'vue'
+import { ref, shallowRef, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { uploadFiles } from '@/api/client'
 import { useParseTask } from '@/composables/useParseTask'
-import { useParseStore } from '@/stores/parse'
-import { useHistory } from '@/composables/useHistory'
+import { useTaskStore } from '@/stores/task'
+import { useHistoryStore } from '@/stores/history'
 import DropZone from '@/components/dashboard/DropZone.vue'
 import QueueBanner from '@/components/dashboard/QueueBanner.vue'
 import LivePreview from '@/components/dashboard/LivePreview.vue'
-import HistoryTable from '@/components/dashboard/HistoryTable.vue'
 import BaseAlert from '@/components/common/BaseAlert.vue'
 
 type ParseTaskReturn = ReturnType<typeof useParseTask>
 
 const router = useRouter()
-const parseStore = useParseStore()
-const history = useHistory()
+const taskStore = useTaskStore()
+const historyStore = useHistoryStore()
 
 const uploadError = ref<string | null>(null)
 const activeParseTasks = shallowRef<Map<string, ParseTaskReturn>>(new Map())
+
+onMounted(() => {
+  historyStore.fetchHistory()
+})
 
 onUnmounted(() => {
   for (const task of activeParseTasks.value.values()) {
@@ -48,28 +51,28 @@ async function onFilesSelected(files: File[]) {
       const taskId = taskIds[i]
       const filename = files[i]?.name ?? `file-${i + 1}.pdf`
 
-      parseStore.addTask(taskId, filename)
+      taskStore.addTask(taskId, filename)
 
       const taskState = useParseTask(taskId, {
         onPageResult(page, markdown) {
-          parseStore.setPageMarkdown(taskId, page, markdown)
+          taskStore.setPageMarkdown(taskId, page, markdown)
         },
         onDone() {
-          parseStore.updateTask(taskId, { status: 'done', pct: 100 })
-          history.fetchHistory()
+          taskStore.updateTask(taskId, { status: 'done', pct: 100 })
+          historyStore.fetchHistory()
 
           if (taskIds.length === 1) {
             setTimeout(() => {
-              router.push(`/verify/${taskId}`)
+              router.push(`/viewer/${taskId}`)
             }, 1200)
           }
         },
         onError(message) {
-          parseStore.updateTask(taskId, { status: 'error', error: message })
-          history.fetchHistory()
+          taskStore.updateTask(taskId, { status: 'error', error: message })
+          historyStore.fetchHistory()
         },
         onStageChange(stage) {
-          parseStore.updateTask(taskId, { currentStage: stage })
+          taskStore.updateTask(taskId, { currentStage: stage })
         },
       })
 
@@ -79,7 +82,7 @@ async function onFilesSelected(files: File[]) {
       taskState.connect()
     }
 
-    history.fetchHistory()
+    historyStore.fetchHistory()
   } catch (e) {
     uploadError.value = e instanceof Error ? e.message : '업로드 중 오류가 발생했습니다.'
   }
@@ -89,7 +92,7 @@ async function onFilesSelected(files: File[]) {
 <template>
   <div>
     <div class="flex items-center gap-4" style="margin-bottom: var(--space-2);">
-      <h1 class="page-title" style="margin-bottom: 0;">PDF → 마크다운 변환</h1>
+      <h1 class="page-title" style="margin-bottom: 0;">PDF -> 마크다운 변환</h1>
     </div>
     <p class="page-subtitle">PDF 파일을 업로드하면 자동으로 마크다운으로 변환합니다.</p>
 
@@ -119,8 +122,5 @@ async function onFilesSelected(files: File[]) {
       :current-stage="primaryTask.currentStage.value"
       :page-markdowns="primaryTask.pageMarkdowns.value"
     />
-
-    <!-- History -->
-    <HistoryTable />
   </div>
 </template>
