@@ -9,16 +9,20 @@ const router = createRouter({
       component: () => import('@/views/DashboardView.vue'),
     },
     {
-      path: '/verify/:taskId',
-      name: 'verify',
-      component: () => import('@/views/VerifyView.vue'),
+      path: '/viewer/:taskId',
+      name: 'viewer',
+      component: () => import('@/views/ViewerView.vue'),
       meta: { fullWidth: true },
     },
     {
+      // Backward-compatible redirect
+      path: '/verify/:taskId',
+      redirect: (to) => `/viewer/${to.params.taskId}`,
+    },
+    {
+      // Compare route deprecated, redirect to dashboard
       path: '/compare',
-      name: 'compare',
-      component: () => import('@/views/CompareView.vue'),
-      meta: { fullWidth: true },
+      redirect: '/',
     },
   ],
 })

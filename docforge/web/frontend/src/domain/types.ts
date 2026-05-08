@@ -9,6 +9,7 @@ export interface HistoryEntry {
   createdAt: string
   completedAt: string
   error: string
+  totalPages: number
 }
 
 export interface ParseResultData {

@@ -25,6 +25,7 @@ export function toHistoryEntry(dto: HistoryItem): HistoryEntry {
     createdAt: dto.created_at,
     completedAt: dto.completed_at,
     error: dto.error,
+    totalPages: dto.total_pages ?? 0,
   }
 }
 

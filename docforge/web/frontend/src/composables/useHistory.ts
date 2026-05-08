@@ -1,23 +1,20 @@
-import { getHistory, deleteHistory, getExportUrl } from '@/api/client'
-import { toHistoryEntry } from '@/api/mappers'
+import { storeToRefs } from 'pinia'
+import { deleteHistory, getExportUrl } from '@/api/client'
 import { useHistoryStore } from '@/stores/history'
 
 export function useHistory() {
   const store = useHistoryStore()
+  const {
+    items,
+    isLoading,
+    error,
+    doneItems,
+    pendingItems,
+    isEmpty,
+  } = storeToRefs(store)
 
   async function fetchHistory() {
-    if (store.isLoading) return
-    store.setLoading(true)
-    store.setError(null)
-
-    try {
-      const data = await getHistory()
-      store.setItems(data.map(toHistoryEntry))
-    } catch (e) {
-      store.setError(e instanceof Error ? e.message : 'Failed to fetch history')
-    } finally {
-      store.setLoading(false)
-    }
+    return store.fetchHistory()
   }
 
   async function deleteItem(taskId: string) {
@@ -35,12 +32,12 @@ export function useHistory() {
   }
 
   return {
-    items: store.items,
-    isLoading: store.isLoading,
-    error: store.error,
-    doneItems: store.doneItems,
-    pendingItems: store.pendingItems,
-    isEmpty: store.isEmpty,
+    items,
+    isLoading,
+    error,
+    doneItems,
+    pendingItems,
+    isEmpty,
     addItem: store.addItem,
     updateItemStatus: store.updateItemStatus,
     fetchHistory,

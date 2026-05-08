@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { getHistory } from '@/api/client'
+import { toHistoryEntry } from '@/api/mappers'
 import type { HistoryEntry } from '@/domain/types'
 
 export const useHistoryStore = defineStore('history', () => {
@@ -48,6 +50,21 @@ export const useHistoryStore = defineStore('history', () => {
     })
   }
 
+  async function fetchHistory() {
+    if (isLoading.value) return
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const data = await getHistory()
+      items.value = data.map(toHistoryEntry)
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch history'
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   return {
     items,
     isLoading,
@@ -61,5 +78,6 @@ export const useHistoryStore = defineStore('history', () => {
     removeItem,
     addItem,
     updateItemStatus,
+    fetchHistory,
   }
 })

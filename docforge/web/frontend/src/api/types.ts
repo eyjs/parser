@@ -64,6 +64,7 @@ export interface HistoryItem {
   created_at: string
   completed_at: string
   error: string
+  total_pages: number
 }
 
 // Queue

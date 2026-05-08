@@ -12,6 +12,10 @@ import type {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || ''
 
+// ---------------------------------------------------------------------------
+// Error hierarchy
+// ---------------------------------------------------------------------------
+
 class ApiClientError extends Error {
   constructor(
     message: string,
@@ -23,17 +27,50 @@ class ApiClientError extends Error {
   }
 }
 
+class NetworkError extends ApiClientError {
+  constructor(message: string) {
+    super(message, 0, 'NETWORK_ERROR')
+    this.name = 'NetworkError'
+  }
+}
+
+class ServerError extends ApiClientError {
+  constructor(message: string, status: number, code?: string) {
+    super(message, status, code)
+    this.name = 'ServerError'
+  }
+}
+
+class ValidationError extends ApiClientError {
+  constructor(message: string, status: number, code?: string) {
+    super(message, status, code)
+    this.name = 'ValidationError'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Core request helper
+// ---------------------------------------------------------------------------
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
   const url = `${API_BASE}${path}`
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      ...options.headers,
-    },
-  })
+
+  let response: Response
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers: {
+        ...options.headers,
+      },
+    })
+  } catch (err) {
+    // fetch itself failed (network down, DNS failure, CORS, etc.)
+    const message = err instanceof Error ? err.message : 'Network request failed'
+    throw new NetworkError(message)
+  }
 
   if (!response.ok) {
     let errorMessage = `HTTP ${response.status}`
@@ -49,7 +86,11 @@ async function request<T>(
       // ignore JSON parse failure
     }
 
-    throw new ApiClientError(errorMessage, response.status, errorCode)
+    if (response.status >= 500) {
+      throw new ServerError(errorMessage, response.status, errorCode)
+    }
+    // 4xx
+    throw new ValidationError(errorMessage, response.status, errorCode)
   }
 
   // Handle no-content responses
@@ -163,4 +204,4 @@ export function getUploadUrl(path: string): string {
   return `${API_BASE}/uploads/${path}`
 }
 
-export { ApiClientError }
+export { ApiClientError, NetworkError, ServerError, ValidationError }

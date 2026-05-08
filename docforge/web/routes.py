@@ -297,8 +297,12 @@ def api_history() -> Response:
     """변환 이력 목록 반환."""
     store = _get_store()
     records = store.list_all()
-    items = [
-        {
+    items = []
+    for r in records:
+        total_pages = 0
+        if r.metadata:
+            total_pages = r.metadata.get("total_pages", r.metadata.get("page_count", 0))
+        items.append({
             "task_id": r.task_id,
             "filename": r.filename,
             "status": r.status,
@@ -307,9 +311,8 @@ def api_history() -> Response:
             "created_at": r.created_at,
             "completed_at": r.completed_at,
             "error": r.error,
-        }
-        for r in records
-    ]
+            "total_pages": total_pages,
+        })
     return jsonify({"success": True, "data": items})
 
 
