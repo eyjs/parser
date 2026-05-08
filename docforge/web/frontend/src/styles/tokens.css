@@ -97,4 +97,14 @@
   --content-max-width: 1200px;
   --sidebar-width: 320px;
   --header-height: 60px;
+
+  /* Sidebar */
+  --sidebar-bg: var(--color-surface);
+  --sidebar-border: var(--color-border);
+  --sidebar-card-hover: var(--color-surface-alt);
+  --sidebar-card-active: var(--color-primary-bg);
+
+  /* Viewer */
+  --viewer-divider: var(--color-border);
+  --viewer-toolbar-height: 48px;
 }
