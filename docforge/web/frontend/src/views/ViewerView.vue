@@ -36,8 +36,8 @@ const resultFilename = ref('')
 const resultCompletedAt = ref('')
 const isLiveMode = ref(false)
 const isSaving = ref(false)
+const metaSidebarOpen = ref(false)
 
-// Version state
 const versions = ref<VersionInfo[]>([])
 const versionsLoading = ref(false)
 const versionDiff = ref<VersionDiff | null>(null)
@@ -187,6 +187,19 @@ function onScrollToPage(page: number) {
         </span>
       </div>
       <div class="viewer-toolbar__right">
+        <button
+          v-if="viewerStore.isOpen && resultStats"
+          class="toolbar-btn"
+          :class="{ 'toolbar-btn--active': metaSidebarOpen }"
+          title="문서 정보"
+          @click="metaSidebarOpen = !metaSidebarOpen"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M8 7v4M8 5h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <span class="toolbar-btn__label">정보</span>
+        </button>
         <BaseButton
           v-if="viewerStore.isOpen"
           variant="secondary"
@@ -210,42 +223,58 @@ function onScrollToPage(page: number) {
       {{ error }}
     </BaseAlert>
 
-    <!-- Stats -->
-    <StatsGrid
-      v-if="resultStats"
-      :stats="resultStats"
-      :metadata="resultMetadata ?? undefined"
-      :filename="resultFilename"
-      :completed-at="resultCompletedAt"
-    />
-
-    <!-- Split panel editor -->
+    <!-- Main content area -->
     <div
       v-if="!viewerStore.isLoading && (viewerStore.isOpen || isLiveMode)"
-      class="viewer-layout"
+      class="viewer-content"
     >
-      <PdfPanel
-        ref="pdfPanelRef"
-        :pdf-url="viewerStore.pdfUrl"
-      />
-      <MarkdownPanel
-        :initial-markdown="viewerStore.markdown"
-        :is-live-mode="isLiveMode"
-        :live-page-markdowns="liveTask.pageMarkdowns.value"
-        :save-fn="onSaveMarkdown"
-        @scroll-to-page="onScrollToPage"
-      />
-    </div>
+      <!-- Split panel editor — primary focus -->
+      <div class="viewer-layout">
+        <PdfPanel
+          ref="pdfPanelRef"
+          :pdf-url="viewerStore.pdfUrl"
+        />
+        <MarkdownPanel
+          :initial-markdown="viewerStore.markdown"
+          :is-live-mode="isLiveMode"
+          :live-page-markdowns="liveTask.pageMarkdowns.value"
+          :save-fn="onSaveMarkdown"
+          @scroll-to-page="onScrollToPage"
+        />
+      </div>
 
-    <!-- Version list -->
-    <VersionList
-      v-if="viewerStore.isOpen"
-      :versions="versions"
-      :is-loading="versionsLoading"
-      :diff-result="versionDiff"
-      style="margin-top: var(--space-4);"
-      @compare="onVersionCompare"
-    />
+      <!-- Collapsible right sidebar for metadata -->
+      <transition name="meta-slide">
+        <div v-if="metaSidebarOpen" class="meta-sidebar">
+          <div class="meta-sidebar__header">
+            <h3 class="meta-sidebar__title">문서 정보</h3>
+            <button
+              class="meta-sidebar__close"
+              title="닫기"
+              @click="metaSidebarOpen = false"
+            >
+              &#x2715;
+            </button>
+          </div>
+          <div class="meta-sidebar__body">
+            <StatsGrid
+              v-if="resultStats"
+              :stats="resultStats"
+              :metadata="resultMetadata ?? undefined"
+              :filename="resultFilename"
+              :completed-at="resultCompletedAt"
+            />
+            <VersionList
+              v-if="viewerStore.isOpen"
+              :versions="versions"
+              :is-loading="versionsLoading"
+              :diff-result="versionDiff"
+              @compare="onVersionCompare"
+            />
+          </div>
+        </div>
+      </transition>
+    </div>
   </div>
 </template>
 
@@ -303,12 +332,125 @@ function onScrollToPage(page: number) {
   gap: var(--space-2);
 }
 
+.toolbar-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.toolbar-btn:hover {
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+}
+
+.toolbar-btn--active {
+  background: var(--color-primary-bg);
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.toolbar-btn__label {
+  line-height: 1;
+}
+
+/* Main content: split panels + optional meta sidebar */
+.viewer-content {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+}
+
 .viewer-layout {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--space-3);
   flex: 1;
-  min-height: 0;
+  min-width: 0;
+}
+
+/* Right metadata sidebar */
+.meta-sidebar {
+  width: var(--meta-sidebar-width);
+  flex-shrink: 0;
+  border-left: 1px solid var(--viewer-divider);
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.meta-sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.meta-sidebar__title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  margin: 0;
+}
+
+.meta-sidebar__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+}
+
+.meta-sidebar__close:hover {
+  background: var(--color-surface-alt);
+  color: var(--color-text);
+}
+
+.meta-sidebar__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.meta-sidebar__body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.meta-sidebar__body::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: var(--radius-full);
+}
+
+/* Slide transition for meta sidebar */
+.meta-slide-enter-active,
+.meta-slide-leave-active {
+  transition: width var(--transition-normal), opacity var(--transition-normal);
+}
+
+.meta-slide-enter-from,
+.meta-slide-leave-to {
+  width: 0;
+  opacity: 0;
 }
 
 .loading-state {
