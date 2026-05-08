@@ -6,15 +6,18 @@ import atexit
 import os
 from pathlib import Path
 
-from flask import Flask, Response, request
+from flask import Flask, Response, request, send_from_directory
+
+
+_FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 
 
 def create_app(upload_dir: Path | None = None) -> Flask:
     """Create and configure the Flask application."""
     app = Flask(
         __name__,
-        static_folder=str(Path(__file__).parent / "static"),
-        template_folder=str(Path(__file__).parent / "templates"),
+        static_folder=str(_FRONTEND_DIST / "assets"),
+        static_url_path="/assets",
     )
 
     if upload_dir is None:
@@ -23,7 +26,6 @@ def create_app(upload_dir: Path | None = None) -> Flask:
 
     app.config["UPLOAD_DIR"] = str(upload_dir)
     app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100MB
-    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
     # --- Cache control for JSON API responses ---
     @app.after_request
@@ -39,13 +41,21 @@ def create_app(upload_dir: Path | None = None) -> Flask:
     from docforge.web.auth import register_auth
     register_auth(app)
 
-    # --- Legacy GUI + API routes ---
+    # --- API routes ---
     from docforge.web.routes import bp
     app.register_blueprint(bp)
 
     # --- V1 API routes ---
     from docforge.web.v1_routes import v1_bp
     app.register_blueprint(v1_bp)
+
+    # --- Vue SPA catch-all ---
+    @app.route("/", defaults={"path": ""})
+    @app.route("/<path:path>")
+    def spa_catch_all(path: str) -> Response:
+        if path and (_FRONTEND_DIST / path).is_file():
+            return send_from_directory(str(_FRONTEND_DIST), path)
+        return send_from_directory(str(_FRONTEND_DIST), "index.html")
 
     # Initialize worker queue
     from docforge.web.worker import init_worker_queue, shutdown_worker_queue

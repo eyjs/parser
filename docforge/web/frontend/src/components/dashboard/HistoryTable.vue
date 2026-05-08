@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useHistory } from '@/composables/useHistory'
 import { formatDate } from '@/utils/format'
 import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 
+const router = useRouter()
 const history = useHistory()
 
 onMounted(() => {
@@ -78,7 +80,7 @@ async function onDelete(taskId: string) {
                   v-if="item.status === 'done'"
                   variant="secondary"
                   size="sm"
-                  :href="`/verify/${item.taskId}`"
+                  @click="router.push(`/verify/${item.taskId}`)"
                 >
                   검증
                 </BaseButton>

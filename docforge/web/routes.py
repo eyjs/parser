@@ -1,4 +1,4 @@
-"""Flask route handlers for DocForge web GUI."""
+"""Flask route handlers for DocForge API."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from flask import (
     Response,
     current_app,
     jsonify,
-    render_template,
     request,
     send_file,
     stream_with_context,
@@ -76,45 +75,6 @@ def _safe_filename(filename: str) -> str:
     if not filename:
         return "upload.pdf"
     return filename
-
-
-# ---------------------------------------------------------------------------
-# Page routes
-# ---------------------------------------------------------------------------
-
-
-@bp.route("/")
-def dashboard() -> str:
-    """대시보드 — 파일 업로드 및 변환 이력."""
-    store = _get_store()
-    records = store.list_all()
-    history = [
-        {
-            "task_id": r.task_id,
-            "filename": r.filename,
-            "status": r.status,
-            "progress": r.progress,
-            "progress_pct": r.progress_pct,
-            "created_at": r.created_at,
-            "completed_at": r.completed_at,
-            "error": r.error,
-        }
-        for r in records
-    ]
-    return render_template("dashboard.html", history=history)
-
-
-@bp.route("/verify/<task_id>")
-def verify(task_id: str) -> str:
-    """결과 검증 페이지."""
-    return render_template("verify.html", task_id=task_id)
-
-
-@bp.route("/edit/<task_id>")
-def editor(task_id: str) -> str:
-    """마크다운 편집기 페이지 (비교 편집기로 리다이렉트)."""
-    from flask import redirect, url_for
-    return redirect(url_for("docforge.verify", task_id=task_id))
 
 
 # ---------------------------------------------------------------------------

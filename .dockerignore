@@ -1,6 +1,7 @@
 venv/
 .venv/
 .git/
+node_modules/
 .pipeline/
 .pytest_cache/
 .mypy_cache/

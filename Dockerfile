@@ -1,3 +1,12 @@
+# Stage 1: Build Vue frontend
+FROM node:22-slim AS frontend
+WORKDIR /frontend
+COPY docforge/web/frontend/package.json docforge/web/frontend/package-lock.json* ./
+RUN npm ci
+COPY docforge/web/frontend/ .
+RUN npm run build
+
+# Stage 2: Python application
 FROM python:3.13-slim
 
 WORKDIR /app
@@ -9,6 +18,9 @@ RUN apt-get update && apt-get install -y \
 
 COPY pyproject.toml .
 COPY docforge/ ./docforge/
+
+# Copy Vue build output into the frontend dist directory
+COPY --from=frontend /frontend/dist ./docforge/web/frontend/dist
 
 RUN pip install --no-cache-dir ".[web,morpheme,cloud_vlm]" gunicorn
 
