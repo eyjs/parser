@@ -86,7 +86,22 @@ def _safe_filename(filename: str) -> str:
 @bp.route("/")
 def dashboard() -> str:
     """대시보드 — 파일 업로드 및 변환 이력."""
-    return render_template("dashboard.html")
+    store = _get_store()
+    records = store.list_all()
+    history = [
+        {
+            "task_id": r.task_id,
+            "filename": r.filename,
+            "status": r.status,
+            "progress": r.progress,
+            "progress_pct": r.progress_pct,
+            "created_at": r.created_at,
+            "completed_at": r.completed_at,
+            "error": r.error,
+        }
+        for r in records
+    ]
+    return render_template("dashboard.html", history=history)
 
 
 @bp.route("/verify/<task_id>")

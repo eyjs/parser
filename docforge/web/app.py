@@ -23,6 +23,7 @@ def create_app(upload_dir: Path | None = None) -> Flask:
 
     app.config["UPLOAD_DIR"] = str(upload_dir)
     app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100MB
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
 
     # --- Cache control for JSON API responses ---
     @app.after_request

@@ -1102,5 +1102,10 @@ function restoreLivePreview(taskId) {
 // Init
 // ---------------------------------------------------------------------------
 
-loadHistory();
+if (window.__INITIAL_HISTORY__) {
+  renderHistory(window.__INITIAL_HISTORY__);
+  window.__INITIAL_HISTORY__ = null;
+} else {
+  loadHistory();
+}
 restoreActiveTasks();
