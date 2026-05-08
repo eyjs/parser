@@ -170,7 +170,7 @@ function onScrollToPage(page: number) {
           variant="secondary"
           size="sm"
           :href="exportUrl"
-          download
+          :download="resultFilename ? resultFilename.replace(/\.pdf$/i, '.md') : 'download.md'"
         >
           다운로드
         </BaseButton>
@@ -192,7 +192,7 @@ function onScrollToPage(page: number) {
     <StatsGrid
       v-if="resultStats"
       :stats="resultStats"
-      :metadata="resultMetadata"
+      :metadata="resultMetadata ?? undefined"
       :filename="resultFilename"
       :completed-at="resultCompletedAt"
     />

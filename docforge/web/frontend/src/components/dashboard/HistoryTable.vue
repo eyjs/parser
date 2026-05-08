@@ -7,10 +7,10 @@ import BaseBadge from '@/components/common/BaseBadge.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 
 const router = useRouter()
-const history = useHistory()
+const { items, isEmpty, isLoading, fetchHistory, deleteItem, exportUrl } = useHistory()
 
 onMounted(() => {
-  history.fetchHistory()
+  fetchHistory()
 })
 
 function badgeVariant(status: string): 'success' | 'error' | 'running' | 'pending' {
@@ -38,7 +38,7 @@ function statusLabel(status: string): string {
 async function onDelete(taskId: string) {
   if (!confirm('이 항목을 삭제하시겠습니까?')) return
   try {
-    await history.deleteItem(taskId)
+    await deleteItem(taskId)
   } catch (e) {
     alert(e instanceof Error ? e.message : '삭제 중 오류가 발생했습니다.')
   }
@@ -60,12 +60,12 @@ async function onDelete(taskId: string) {
           </tr>
         </thead>
         <tbody>
-          <tr v-if="history.isEmpty && !history.isLoading">
+          <tr v-if="isEmpty && !isLoading">
             <td colspan="5" class="text-muted text-sm" style="text-align: center; padding: 2rem;">
               변환 이력이 없습니다.
             </td>
           </tr>
-          <tr v-for="item in history.items" :key="item.taskId" :data-task-id="item.taskId">
+          <tr v-for="item in items" :key="item.taskId" :data-task-id="item.taskId">
             <td :title="item.taskId">{{ item.filename }}</td>
             <td>
               <BaseBadge :variant="badgeVariant(item.status)">
@@ -88,7 +88,7 @@ async function onDelete(taskId: string) {
                   v-if="item.status === 'done'"
                   variant="secondary"
                   size="sm"
-                  :href="history.exportUrl(item.taskId)"
+                  :href="exportUrl(item.taskId)"
                 >
                   다운로드
                 </BaseButton>

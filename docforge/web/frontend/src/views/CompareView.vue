@@ -30,7 +30,7 @@ const isLoadingTask = ref(false)
 const loadError = ref<string | null>(null)
 
 const doneItems = computed((): HistoryEntry[] => {
-  return history.doneItems as HistoryEntry[]
+  return history.doneItems.value as HistoryEntry[]
 })
 
 history.fetchHistory()

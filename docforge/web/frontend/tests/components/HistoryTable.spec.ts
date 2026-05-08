@@ -36,6 +36,7 @@ function makeItem(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     createdAt: '2026-01-01T00:00:00Z',
     completedAt: '2026-01-01T00:05:00Z',
     error: '',
+    totalPages: 0,
     ...overrides,
   }
 }

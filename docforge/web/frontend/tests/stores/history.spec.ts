@@ -18,6 +18,7 @@ describe('useHistoryStore', () => {
       createdAt: '2026-01-01',
       completedAt: '2026-01-01',
       error: '',
+      totalPages: 5,
     },
     {
       taskId: 't2',
@@ -28,6 +29,7 @@ describe('useHistoryStore', () => {
       createdAt: '2026-01-02',
       completedAt: '',
       error: '',
+      totalPages: 10,
     },
     {
       taskId: 't3',
@@ -38,6 +40,7 @@ describe('useHistoryStore', () => {
       createdAt: '2026-01-03',
       completedAt: '',
       error: 'Failed',
+      totalPages: 0,
     },
   ]
 
@@ -105,6 +108,7 @@ describe('useHistoryStore', () => {
         createdAt: '2026-01-04',
         completedAt: '',
         error: '',
+        totalPages: 0,
       }
       store.addItem(newItem)
 
