@@ -116,6 +116,7 @@ class Qwen2VLMLXEngine:
             return ""
 
     def _run_inference(self, pil_image: object, prompt: str) -> str:
+        import tempfile
         from mlx_vlm import generate
         from mlx_vlm.prompt_utils import apply_chat_template
         from mlx_vlm.utils import load_config
@@ -124,11 +125,18 @@ class Qwen2VLMLXEngine:
         formatted = apply_chat_template(
             self._processor, config, prompt, num_images=1,
         )
-        result = generate(
-            self._model, self._processor, pil_image,
-            formatted, max_tokens=self._max_new_tokens, verbose=False,
-        )
-        return result
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            pil_image.save(tmp, format="PNG")
+            tmp_path = tmp.name
+        try:
+            result = generate(
+                self._model, self._processor, formatted,
+                tmp_path, max_tokens=self._max_new_tokens, verbose=False,
+            )
+        finally:
+            import os
+            os.unlink(tmp_path)
+        return result.text if hasattr(result, "text") else str(result)
 
 
 def _raw_image_to_pil(image: RawImage) -> object:
