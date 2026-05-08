@@ -1,91 +1,137 @@
-# DocForge 프론트엔드 리팩토링 — 파이프라인 완료 보고서
+# DocForge v2 Frontend + Backend Redesign -- Pipeline Report
 
-**완료 일시**: 2026-05-07
-**파이프라인**: Vue 3 SPA 전면 리팩토링
-**브랜치**: `feature/v1-api`
-**최종 커밋**: `1416174` — `feat(web): Vue 3 + TypeScript SPA 프론트엔드 전면 리팩토링`
-
----
-
-## 최종 상태: 완료
-
-| 단계 | 상태 | 비고 |
-|------|------|------|
-| 계획 수립 | 완료 | 12개 태스크, 7개 병렬 그룹 |
-| 계획 리뷰 | 완료 | 재시도 없음 |
-| 디자인 | 완료 | 디자인 토큰 + 컴포넌트 스펙 |
-| 구현 Group A~G | 완료 | 12개 태스크 전원 완료 |
-| 코드 리뷰 | 완료 | 7건 이슈 발견 → 전원 수정 |
-| 통합 검증 | 완료 | 빌드 성공, 테스트 전체 통과 |
-| 문서 생성 | 완료 | |
+**Completed**: 2026-05-08
+**Pipeline**: feature/frontend-backend-redesign
+**Branch**: `feature/v1-api`
+**Commits**: 7112d8f..7a34b08 (4 commits, 22 files, +1,051/-196 lines)
 
 ---
 
-## 품질 지표
+## Final Status: DONE
 
-| 지표 | 목표 | 달성 |
-|------|------|------|
-| 단위 테스트 통과 | 전체 통과 | 79/79 (0 실패) |
-| TypeScript 에러 | 0건 | 0건 |
-| 프로덕션 빌드 | 성공 | 성공 (142 모듈, 1.39s) |
-| 단일 파일 최대 줄 수 | 400줄 이하 | 247줄 |
-| 코드 리뷰 이슈 수정 | 전원 수정 | 7/7 |
-
----
-
-## 주요 변경 사항
-
-### 신규 기능 (5대 축)
-1. **파싱 업로드** — DropZone 드래그앤드롭, PDF 필터링, 용량 검증
-2. **대시보드** — SSE 실시간 파싱 현황, 페이지 그리드, 스테이지 표시
-3. **비교 도구** — PDF vs MD (Mode A), MD vs MD git-diff 컬러링 (Mode B)
-4. **실시간 편집** — 마크다운 편집기 + 즉시 렌더링 + 저장
-5. **다운로드** — RAG 임베딩용 마크다운 내보내기
-
-### 기술 스택
-| 이전 | 이후 |
-|------|------|
-| 순수 HTML/JS | Vue 3 Composition API |
-| Flask 템플릿 | Vite SPA + Vercel |
-| 전역 스크립트 | TypeScript strict mode |
-| 없음 | Pinia 상태관리 |
-| 없음 | 79개 단위 테스트 |
-
-### 제거된 레거시
-- `docforge/launcher.py` (PyInstaller/exe 관련)
-- `docforge/web/static/js/lib/` 번들 라이브러리 3개 (marked, pdf.js)
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Requirement | Done | P0 5 items, P1 5 items, P2 4 items |
+| Planning | Done | 7 tasks, 3 parallel groups, 0 retries |
+| Plan Review | Done | Passed on first review |
+| Design | Done | Design system v2, 5 new tokens, 5 component specs, 3 screen specs |
+| Implementation | Done | 7/7 tasks (Group-A: 4 parallel, Group-B: 2 parallel, Group-C: 1 sequential) |
+| Code Review | Done | 6 issues found and fixed (all TypeScript type issues) |
+| Integration | Done | vue-tsc: pass, vitest: 82/82 pass, vite build: pass |
+| Documentation | Done | Release note, ADR-004, changelog, insights |
 
 ---
 
-## 코드 리뷰 수정 내역 (7건)
+## Requirement Coverage
 
-| # | 심각도 | 내용 |
-|---|--------|------|
-| 1 | Critical | XSS — v-html에 DOMPurify 미적용 |
-| 2 | Critical | shallowRef 직접 mutation → 반응성 미작동 |
-| 3 | High | SSE page_result 타입 미검증 (unsafe cast) |
-| 4 | High | 저장 실패 에러 조용히 삼킴 |
-| 5 | Medium | clipboard API 프로미스 미처리 |
-| 6 | Medium | deleteItem 프로미스 미처리 |
-| 7 | Low | 테스트 sort order 비결정적 (같은 밀리초) |
+### P0 (Required) -- 5/5
+- [x] Dashboard history immediate display (root cause fix: onMounted + storeToRefs)
+- [x] Left sidebar with task list and status badges
+- [x] Split-panel document viewer (PDF left + Markdown right)
+- [x] File upload with real-time SSE progress
+- [x] Backend API response structure 100% unified ({ success, data, error })
+
+### P1 (Important) -- 5/5
+- [x] Markdown edit + save (/api/save/:taskId)
+- [x] Markdown download (/api/export/:taskId)
+- [x] Version history UI with diff display
+- [x] Error state display with retry button on sidebar cards
+- [x] Pinia store 3-way split (history / task / viewer)
+
+### P2 (Nice to have) -- 1/4
+- [x] Sidebar task list filter (all/done/running/error)
+- [ ] Split panel ratio drag resizer
+- [ ] Markdown preview toggle (edit vs render mode)
+- [ ] Keyboard shortcuts (Cmd+S save, Cmd+D download)
 
 ---
 
-## 배포 방법
+## Quality Metrics
+
+| Metric | Target | Achieved |
+|--------|--------|----------|
+| TypeScript errors | 0 | 0 |
+| Unit tests | All pass | 82/82 pass |
+| Vite build | Success | Success (1.44s) |
+| Code review fixes | All resolved | 6/6 resolved |
+| Max file lines | <800 | 306 (ViewerView.vue) |
+| Pipeline retries | <2 per phase | 0 total |
+
+---
+
+## Architecture Decisions
+
+| ID | Description |
+|----|-------------|
+| AD-1 | Header nav -> Sidebar layout (CSS Grid, 320px fixed) |
+| AD-2 | 2 stores -> 3 domain stores (history/task/viewer) |
+| AD-3 | App-level history fetch (onMounted in App.vue) |
+| AD-4 | API error hierarchy (NetworkError/ServerError/ValidationError) |
+| AD-5 | /api/history response enriched (total_pages, created_at) |
+
+---
+
+## Key Files
+
+### New Components (3)
+- `src/components/layout/AppSidebar.vue` -- 193 lines
+- `src/components/layout/SidebarTaskCard.vue` -- 186 lines
+- `src/views/ViewerView.vue` -- 306 lines
+
+### New Stores (2)
+- `src/stores/task.ts` -- 106 lines
+- `src/stores/viewer.ts` -- 90 lines
+
+### Modified Core (5)
+- `src/App.vue` -- App-level fetch
+- `src/router/index.ts` -- /viewer route + redirects
+- `src/api/client.ts` -- Error hierarchy
+- `src/composables/useHistory.ts` -- storeToRefs fix
+- `docforge/web/routes.py` -- total_pages field
+
+---
+
+## Code Review (6 issues, all fixed)
+
+| # | Severity | Issue |
+|---|----------|-------|
+| 1 | Medium | ViewerView download prop type mismatch (TS2322) |
+| 2 | Medium | metadata null vs undefined incompatibility (TS2322) |
+| 3 | Medium | CompareView ref .value access missing (TS2352) |
+| 4 | High | HistoryTable template type inference failure (14x TS2339) |
+| 5 | Low | Test fixture missing totalPages field (TS2741) |
+| 6 | Low | Test fixture missing totalPages field (TS2322) |
+
+---
+
+## Success Criteria
+
+| Criterion | Result |
+|-----------|--------|
+| Browser refresh -> history immediately visible | PASS |
+| Upload -> SSE progress -> complete -> viewer (no page nav) | PASS |
+| Split panel: edit markdown -> save -> download | PASS |
+| All API endpoints: { success, data, error } | PASS |
+| docker compose up --build | PASS |
+
+---
+
+## Documents
+
+| Document | Path |
+|----------|------|
+| Release Note | `.pipeline/docs/release-note-v2-redesign.md` |
+| ADR-004 | `.pipeline/docs/adr-004-sidebar-layout-redesign.md` |
+| Changelog | `.pipeline/docs/changelog-entry-v2-redesign.md` |
+| Insights | `.pipeline/docs/insights-v2-redesign.md` |
+| Report | `REPORT.md` |
+
+---
+
+## Deployment
 
 ```bash
-cd docforge/web/frontend
-npm install && npm run build
-# Vercel 환경변수: VITE_API_BASE_URL=https://<docker-backend-url>
-# 백엔드 DOCFORGE_ALLOWED_ORIGINS에 Vercel 도메인 추가
+docker compose up --build
 ```
 
----
-
-## 생성된 문서
-
-| 문서 | 경로 |
-|------|------|
-| 릴리즈 노트 | `.pipeline/docs/RELEASE_NOTES.md` |
-| ADR-001 | `.pipeline/docs/ADR-001-vue3-spa-rewrite.md` |
-| 완료 보고서 | `REPORT.md` |
+No infrastructure changes. Docker multi-stage build structure preserved.

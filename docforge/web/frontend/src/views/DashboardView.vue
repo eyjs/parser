@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, computed, onMounted, onUnmounted } from 'vue'
+import { ref, shallowRef, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { uploadFiles } from '@/api/client'
 import { useParseTask } from '@/composables/useParseTask'
@@ -18,10 +18,6 @@ const historyStore = useHistoryStore()
 
 const uploadError = ref<string | null>(null)
 const activeParseTasks = shallowRef<Map<string, ParseTaskReturn>>(new Map())
-
-onMounted(() => {
-  historyStore.fetchHistory()
-})
 
 onUnmounted(() => {
   for (const task of activeParseTasks.value.values()) {

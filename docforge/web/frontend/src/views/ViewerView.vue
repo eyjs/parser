@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch, shallowRef } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   getParseResult,
@@ -25,7 +25,7 @@ import BaseAlert from '@/components/common/BaseAlert.vue'
 import BaseButton from '@/components/common/BaseButton.vue'
 
 const route = useRoute()
-const taskId = route.params.taskId as string
+const taskId = computed(() => route.params.taskId as string)
 const viewerStore = useViewerStore()
 const historyStore = useHistoryStore()
 
@@ -46,34 +46,56 @@ const pdfPanelRef = ref<InstanceType<typeof PdfPanel> | null>(null)
 
 let liveAttempted = false
 
-const liveTask = useParseTask(taskId, {
-  onDone() {
-    isLiveMode.value = false
-    loadResult()
-    historyStore.fetchHistory()
-  },
-  onError(message) {
-    isLiveMode.value = false
-    error.value = message
-  },
-})
+function createLiveTask(id: string) {
+  return useParseTask(id, {
+    onDone() {
+      isLiveMode.value = false
+      loadResult()
+      historyStore.fetchHistory()
+    },
+    onError(message) {
+      isLiveMode.value = false
+      error.value = message
+    },
+  })
+}
 
-const exportUrl = computed(() => getExportUrl(taskId))
+const liveTask = shallowRef(createLiveTask(taskId.value))
+
+const exportUrl = computed(() => getExportUrl(taskId.value))
 
 onMounted(() => {
   viewerStore.setLoading(true)
   loadResult()
 })
 
+watch(taskId, (newId) => {
+  liveTask.value.disconnect()
+  liveAttempted = false
+  isLiveMode.value = false
+  error.value = null
+  resultStats.value = null
+  resultMetadata.value = null
+  resultFilename.value = ''
+  resultCompletedAt.value = ''
+  versions.value = []
+  versionDiff.value = null
+  viewerStore.close()
+
+  liveTask.value = createLiveTask(newId)
+  viewerStore.setLoading(true)
+  loadResult()
+})
+
 onUnmounted(() => {
-  liveTask.disconnect()
+  liveTask.value.disconnect()
 })
 
 async function loadResult() {
   error.value = null
 
   try {
-    const data = toParseResultData(await getParseResult(taskId))
+    const data = toParseResultData(await getParseResult(taskId.value))
     resultStats.value = data.stats
     resultMetadata.value = data.metadata
     resultFilename.value = data.filename
@@ -82,7 +104,7 @@ async function loadResult() {
     let pdfUrl: string | null = null
     if (data.pdfPath) {
       const parts = data.pdfPath.replace(/\\/g, '/').split('/')
-      const taskIdx = parts.indexOf(taskId)
+      const taskIdx = parts.indexOf(taskId.value)
       if (taskIdx >= 0) {
         const relative = parts.slice(taskIdx).join('/')
         pdfUrl = getUploadUrl(relative)
@@ -90,7 +112,7 @@ async function loadResult() {
     }
 
     const md = stripFrontMatter(data.markdown ?? '')
-    viewerStore.openDocument(taskId, { pdfUrl, markdown: md })
+    viewerStore.openDocument(taskId.value, { pdfUrl, markdown: md })
     loadVersions()
   } catch (e) {
     const isNotReady = e instanceof ApiClientError && (e.status === 404 || e.code === 'NOT_READY')
@@ -108,7 +130,7 @@ async function loadResult() {
 async function loadVersions() {
   versionsLoading.value = true
   try {
-    versions.value = (await getVersions(taskId)).map(toVersionInfo)
+    versions.value = (await getVersions(taskId.value)).map(toVersionInfo)
   } catch {
     // Version list is non-critical; leave empty
   } finally {
@@ -118,7 +140,7 @@ async function loadVersions() {
 
 async function onVersionCompare(v1: string, v2: string) {
   try {
-    versionDiff.value = toVersionDiff(await getDiff(taskId, v1, v2))
+    versionDiff.value = toVersionDiff(await getDiff(taskId.value, v1, v2))
   } catch (e) {
     error.value = e instanceof Error ? e.message : '버전 비교에 실패했습니다.'
   }
@@ -128,7 +150,7 @@ async function onSaveMarkdown(md: string) {
   isSaving.value = true
   viewerStore.setSaving(true)
   try {
-    await saveMarkdown(taskId, md)
+    await saveMarkdown(taskId.value, md)
     viewerStore.markSaved()
   } catch (e) {
     const msg = e instanceof Error ? e.message : '저장에 실패했습니다.'
@@ -143,7 +165,7 @@ function enterLiveMode() {
   liveAttempted = true
   isLiveMode.value = true
   viewerStore.setLoading(false)
-  liveTask.connect()
+  liveTask.value.connect()
 }
 
 function onScrollToPage(page: number) {

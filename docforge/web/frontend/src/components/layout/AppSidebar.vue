@@ -6,6 +6,7 @@ import { useHistoryStore } from '@/stores/history'
 import { useTaskStore } from '@/stores/task'
 import { uploadFiles } from '@/api/client'
 import SidebarTaskCard from './SidebarTaskCard.vue'
+import BaseAlert from '@/components/common/BaseAlert.vue'
 import type { HistoryEntry } from '@/domain/types'
 
 const router = useRouter()
@@ -16,6 +17,7 @@ const { items, isEmpty, isLoading } = storeToRefs(historyStore)
 const { activeTaskList } = storeToRefs(taskStore)
 
 const fileInput = ref<HTMLInputElement | null>(null)
+const uploadError = ref<string | null>(null)
 
 const currentTaskId = computed(() => {
   const route = router.currentRoute.value
@@ -59,6 +61,7 @@ async function onFileChange(event: Event) {
   const files = input.files
   if (!files || files.length === 0) return
 
+  uploadError.value = null
   try {
     const response = await uploadFiles(Array.from(files))
     const taskIds = response.task_ids ?? [response.task_id]
@@ -67,8 +70,8 @@ async function onFileChange(event: Event) {
       taskStore.addTask(taskIds[i], filename)
     }
     historyStore.fetchHistory()
-  } catch {
-    // Upload errors are handled in DashboardView
+  } catch (e) {
+    uploadError.value = e instanceof Error ? e.message : '업로드 중 오류가 발생했습니다.'
   }
 
   // Reset input so same file can be re-selected
@@ -97,6 +100,16 @@ async function onFileChange(event: Event) {
         @change="onFileChange"
       />
     </div>
+
+    <BaseAlert
+      v-if="uploadError"
+      variant="error"
+      dismissible
+      style="margin: var(--space-2);"
+      @dismiss="uploadError = null"
+    >
+      {{ uploadError }}
+    </BaseAlert>
 
     <div class="app-sidebar__list">
       <div v-if="isLoading && isEmpty" class="app-sidebar__empty">
