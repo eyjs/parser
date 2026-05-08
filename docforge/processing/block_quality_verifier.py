@@ -82,7 +82,9 @@ class BlockQualityVerifier:
 
         # Needs retry?
         needs_retry = (
-            quality_score < threshold or block.confidence < _CONFIDENCE_LOW
+            quality_score < threshold
+            or block.confidence < _CONFIDENCE_LOW
+            or is_garbled
         )
 
         # Only recommend fallback when retry is actually needed

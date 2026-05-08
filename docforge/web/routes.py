@@ -530,6 +530,7 @@ def _run_parse(app, task_id: str, pdf_path: Path) -> None:
         try:
             from datetime import datetime, timezone, timedelta
 
+            from docforge.infrastructure.config import ParserConfig
             from docforge.usecases.parse_pdf import parse_pdf
             from docforge.web.sse import EVT_DONE, EVT_PROFILING, progress_line_to_sse
 
@@ -552,14 +553,32 @@ def _run_parse(app, task_id: str, pdf_path: Path) -> None:
             def _on_page_done(page_num: int, page_md: str) -> None:
                 tracker.push_page_result(page_num, total_pages_ref[0], page_md)
 
+            image_web_path = f"/uploads/{task_id}/images"
+            config = ParserConfig(
+                image_output_dir=image_web_path,
+            )
+
             result = parse_pdf(
                 pdf_path,
+                config=config,
                 on_progress=_on_progress,
                 on_page_done=_on_page_done,
             )
 
             KST = timezone(timedelta(hours=9))
             completed_at = datetime.now(KST).isoformat()
+
+            # Persist extracted images to disk
+            upload_dir = Path(current_app.config["UPLOAD_DIR"])
+            img_disk_dir = upload_dir / task_id / "images"
+            img_disk_dir.mkdir(parents=True, exist_ok=True)
+            for page in result.pages:
+                for image in page.images:
+                    if not image.data:
+                        continue
+                    ext = "jpg" if image.format == "jpeg" else image.format
+                    fname = f"page-{image.page_num}-img-{image.block_id}.{ext}"
+                    (img_disk_dir / fname).write_bytes(image.data)
 
             # Persist markdown
             md_path = pdf_path.parent / (pdf_path.stem + ".md")
