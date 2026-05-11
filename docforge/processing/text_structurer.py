@@ -1,12 +1,18 @@
-"""Text structure recognition — domain-agnostic facade.
+"""Text structure recognition -- domain-agnostic facade.
 
 Delegates classification to a ``DomainProfile`` implementation. The default
 profile (``KoreanLegalProfile``) preserves the historical behaviour for
 Korean legal/insurance documents; other domains are selected by injecting
 a different profile (e.g. ``EnglishAcademicProfile``).
 
-This module no longer owns any regex constants — they live in
+This module no longer owns any regex constants -- they live in
 ``docforge.processing.domain_profiles``.
+
+The new signal-based ``BlockClassifier`` from ``block_classifier.py`` is
+available via ``classify_block_signal()`` for callers that can provide
+richer context (bbox, page dimensions, layout labels). The legacy
+``classify_block()`` function is preserved exactly as-is for backward
+compatibility.
 """
 
 from __future__ import annotations
@@ -30,6 +36,10 @@ def classify_block(
 ) -> tuple[BlockType, int]:
     """Classify a text block into its structural type and heading level.
 
+    This is the **legacy** entry point. It delegates to a ``DomainProfile``
+    and uses only font_size + regex heuristics. For the signal-based
+    classifier see :func:`block_classifier.classify_block_signal`.
+
     Args:
         text: Raw block text.
         font_size: Block font size, used for font-based heading detection.
@@ -50,7 +60,7 @@ def classify_block(
 
     if domain_profile is None:
         # Imported lazily to avoid a circular import at module load time
-        # (domain_profiles → domain.enums; safe but kept lazy for symmetry
+        # (domain_profiles -> domain.enums; safe but kept lazy for symmetry
         # with the optional override path).
         from docforge.processing.domain_profiles import KoreanLegalProfile
 

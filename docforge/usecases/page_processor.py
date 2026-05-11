@@ -286,6 +286,10 @@ class PageProcessor:
                         clean_blocks, col_layout,
                     )
 
+            # Text Quality Gate: evaluate and repair low-quality blocks
+            # before classification. Runs in-place on clean_blocks.
+            clean_blocks = self._apply_text_quality_gate(clean_blocks)
+
             clean_blocks = split_heading_body(
                 clean_blocks, morpheme_analyzer=self._morpheme_analyzer,
             )
@@ -723,6 +727,61 @@ class PageProcessor:
                 exc_info=True,
             )
             return ocr_blocks
+
+    def _apply_text_quality_gate(
+        self,
+        blocks: list[TextBlock],
+    ) -> list[TextBlock]:
+        """Run the text quality gate on extracted blocks.
+
+        Low-quality blocks get their text repaired (encoding fix, CID
+        strip) or their confidence penalized. Original blocks are never
+        mutated -- new TextBlock instances are returned.
+
+        Graceful degradation: returns original blocks on any error.
+        """
+        if not blocks:
+            return blocks
+        try:
+            from docforge.processing.text_quality_gate import TextQualityGate
+
+            gate = TextQualityGate()
+            result: list[TextBlock] = []
+            for block in blocks:
+                qr = gate.evaluate(block.text)
+                if qr.repair_applied and qr.repaired_text:
+                    new_confidence = max(0.0, block.confidence - qr.confidence_penalty)
+                    result.append(TextBlock(
+                        text=qr.repaired_text,
+                        bbox=block.bbox,
+                        font=block.font,
+                        block_type=block.block_type,
+                        heading_level=block.heading_level,
+                        confidence=new_confidence,
+                        block_id=block.block_id,
+                        parent_id=block.parent_id,
+                    ))
+                elif qr.confidence_penalty > 0:
+                    new_confidence = max(0.0, block.confidence - qr.confidence_penalty)
+                    result.append(TextBlock(
+                        text=block.text,
+                        bbox=block.bbox,
+                        font=block.font,
+                        block_type=block.block_type,
+                        heading_level=block.heading_level,
+                        confidence=new_confidence,
+                        block_id=block.block_id,
+                        parent_id=block.parent_id,
+                    ))
+                else:
+                    result.append(block)
+            return result
+        except Exception:
+            _page_logger.warning(
+                "Text quality gate failed, using original blocks",
+                exc_info=True,
+            )
+            return blocks
 
     def _apply_heading_detector(
         self,

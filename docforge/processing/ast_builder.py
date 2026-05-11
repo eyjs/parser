@@ -27,7 +27,9 @@ from docforge.domain.ast_nodes import (
     ASTNode,
     DocumentAST,
     FigureNode,
+    FormNode,
     HeadingNode,
+    KeyValueNode,
     ParagraphNode,
     SectionNode,
     TableNode,
@@ -245,16 +247,22 @@ def _insert_tables(
     root: _MutableSection,
     page_tables: list[tuple[int, "Table"]],
 ) -> None:
-    """Insert TableNodes into the section closest by vertical position."""
+    """Insert TableNodes (or FormNodes for form-like tables) into the
+    section closest by vertical position."""
     if not page_tables:
         return
 
     sections = _collect_sections(root)
     for page_num, table in page_tables:
-        node_id = _make_node_id(f"table_{page_num}_{table.bbox.y0}", page_num)
-        table_node = TableNode(node_id=node_id, table=table)
-        target = _find_closest_section(sections, table.bbox.y0, root)
-        target.children.append(table_node)
+        if _is_form_like(table):
+            form_node = _table_to_form_node(table, page_num)
+            target = _find_closest_section(sections, table.bbox.y0, root)
+            target.children.append(form_node)
+        else:
+            node_id = _make_node_id(f"table_{page_num}_{table.bbox.y0}", page_num)
+            table_node = TableNode(node_id=node_id, table=table)
+            target = _find_closest_section(sections, table.bbox.y0, root)
+            target.children.append(table_node)
 
 
 def _insert_images(
@@ -352,6 +360,65 @@ def _make_node_id(content: str, page_num: int) -> str:
     """Deterministic 12-char node ID from content + page number."""
     key = f"{content}|{page_num}"
     return hashlib.md5(key.encode("utf-8")).hexdigest()[:12]
+
+
+# ---------------------------------------------------------------------------
+# Table vs Form heuristic
+# ---------------------------------------------------------------------------
+
+
+def _is_form_like(table: "Table") -> bool:
+    """Heuristic: is this table actually a form (key-value layout)?
+
+    A table is form-like when:
+    1. It has exactly 2 columns AND most rows have a short label + value, OR
+    2. Cell sizes are highly non-uniform (label cells much shorter than value cells)
+
+    This is a basic heuristic -- future iterations can add layout-signal
+    scoring.
+    """
+    if table.cols != 2 or table.rows < 2:
+        return False
+
+    label_value_count = 0
+    for row_idx in range(table.rows):
+        row_cells = [c for c in table.cells if c.row == row_idx]
+        if len(row_cells) != 2:
+            continue
+        left, right = sorted(row_cells, key=lambda c: c.col)
+        left_text = left.text.strip()
+        right_text = right.text.strip()
+        # Label must be at least 2 chars (single-char cells are data, not labels)
+        if len(left_text) < 2 or len(right_text) == 0:
+            continue
+        if len(left_text) > 30:
+            continue
+        # Label ends with colon or full-width colon -> strong form signal
+        if left_text.endswith(":") or left_text.endswith("："):
+            label_value_count += 1
+        # Short label (2-15 chars) that is shorter than value -> form-like
+        elif len(left_text) <= 15 and len(right_text) > len(left_text):
+            label_value_count += 1
+
+    return label_value_count >= table.rows * 0.6
+
+
+def _table_to_form_node(table: "Table", page_num: int) -> FormNode:
+    """Convert a form-like table into a FormNode."""
+    fields: list[KeyValueNode] = []
+    for row_idx in range(table.rows):
+        row_cells = [c for c in table.cells if c.row == row_idx]
+        if len(row_cells) != 2:
+            continue
+        left, right = sorted(row_cells, key=lambda c: c.col)
+        key = left.text.strip().rstrip(":").rstrip("：").strip()
+        value = right.text.strip()
+        if key or value:
+            node_id = _make_node_id(f"kv_{page_num}_{row_idx}_{key}", page_num)
+            fields.append(KeyValueNode(node_id=node_id, key=key, value=value))
+
+    form_id = _make_node_id(f"form_{page_num}_{table.bbox.y0}", page_num)
+    return FormNode(node_id=form_id, fields=tuple(fields))
 
 
 __all__ = ["build"]

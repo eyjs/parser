@@ -19,7 +19,9 @@ from docforge.domain.ast_nodes import (
     ASTNodeType,
     DocumentAST,
     FigureNode,
+    FormNode,
     HeadingNode,
+    KeyValueNode,
     ParagraphNode,
     SectionNode,
     TableNode,
@@ -71,6 +73,10 @@ def _render_node(node: object) -> list[str]:
         return _render_table(node)
     if isinstance(node, FigureNode):
         return _render_figure(node)
+    if isinstance(node, FormNode):
+        return _render_form(node)
+    if isinstance(node, KeyValueNode):
+        return _render_key_value(node)
     # Unknown node type -- skip silently
     return []
 
@@ -131,6 +137,33 @@ def _render_figure(node: FigureNode) -> list[str]:
     # Placeholder URI matching legacy assembler
     uri = f"placeholder://image/{node.node_id}?page={node.page_num}"
     return ["", f"![{alt}]({uri})", ""]
+
+
+def _render_form(node: FormNode) -> list[str]:
+    """Render a form as a key-value list.
+
+    Each field becomes a Markdown definition-list-style entry:
+    ``**Key**: Value``
+    """
+    if not node.fields:
+        return []
+    parts: list[str] = [""]
+    for kv in node.fields:
+        key = kv.key.strip()
+        value = kv.value.strip()
+        if key or value:
+            parts.append(f"**{key}**: {value}")
+    parts.append("")
+    return parts
+
+
+def _render_key_value(node: KeyValueNode) -> list[str]:
+    """Render a standalone key-value pair."""
+    key = node.key.strip()
+    value = node.value.strip()
+    if not key and not value:
+        return []
+    return [f"**{key}**: {value}"]
 
 
 __all__ = ["render"]

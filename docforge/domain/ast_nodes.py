@@ -31,6 +31,8 @@ class ASTNodeType(str, Enum):
     CAPTION = "caption"
     LIST = "list"
     LIST_ITEM = "list_item"
+    FORM = "form"
+    KEY_VALUE = "key_value"
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +86,29 @@ class FigureNode:
     node_type: ASTNodeType = field(default=ASTNodeType.FIGURE, init=False)
 
 
+@dataclass(frozen=True)
+class KeyValueNode:
+    """A single key-value pair extracted from a form or structured layout."""
+
+    node_id: str
+    key: str
+    value: str
+    node_type: ASTNodeType = field(default=ASTNodeType.KEY_VALUE, init=False)
+
+
+@dataclass(frozen=True)
+class FormNode:
+    """A structured form region containing key-value pairs.
+
+    Distinguishes structured key-value layouts (boarding passes, invoices,
+    application forms) from regular data tables.
+    """
+
+    node_id: str
+    fields: tuple[KeyValueNode, ...]
+    node_type: ASTNodeType = field(default=ASTNodeType.FORM, init=False)
+
+
 # ---------------------------------------------------------------------------
 # Composite nodes
 # ---------------------------------------------------------------------------
@@ -127,7 +152,10 @@ class DocumentAST:
 
 # Runtime-safe type alias for type annotations in other modules.
 # Use in TYPE_CHECKING blocks: ``ASTNode`` covers all concrete node types.
-ASTNode = Union[HeadingNode, ParagraphNode, TableNode, FigureNode, SectionNode]
+ASTNode = Union[
+    HeadingNode, ParagraphNode, TableNode, FigureNode,
+    SectionNode, FormNode, KeyValueNode,
+]
 
 __all__ = [
     "ASTNodeType",
@@ -135,6 +163,8 @@ __all__ = [
     "ParagraphNode",
     "TableNode",
     "FigureNode",
+    "KeyValueNode",
+    "FormNode",
     "SectionNode",
     "DocumentAST",
     "ASTNode",
