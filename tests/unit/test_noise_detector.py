@@ -9,6 +9,7 @@ from docforge.processing.noise_detector import (
     _normalize_for_matching,
     classify_noise,
     filter_noise_from_blocks,
+    filter_noise_with_layout,
     is_page_number,
     learn_patterns,
 )
@@ -196,3 +197,23 @@ class TestBlockFiltering:
 
         clean, stats = filter_noise_from_blocks(blocks, 800.0, patterns, config)
         assert len(clean) == 2
+
+
+class TestFilterNoiseWithLayoutImportable:
+    """Verify filter_noise_with_layout is importable alongside existing functions."""
+
+    def test_importable_and_callable(self) -> None:
+        assert callable(filter_noise_with_layout)
+
+    def test_function_signature_accepts_layout_blocks(self) -> None:
+        """Smoke test: calling with empty inputs should not raise."""
+        from docforge.processing.noise_detector import filter_noise_with_layout as fn
+        patterns = LearnedPatterns(
+            header_patterns=frozenset(),
+            footer_patterns=frozenset(),
+            watermark_patterns=frozenset(),
+        )
+        config = ParserConfig()
+        clean, stats = fn([], [], 800.0, patterns, config)
+        assert clean == []
+        assert stats.headers == 0

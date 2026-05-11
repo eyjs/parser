@@ -184,6 +184,60 @@ class TestRouteBlocks:
         assert decisions[0].action == "custom"
 
 
+# ---- Sprint 3: New BlockType routing rules ----
+
+
+class TestNewBlockTypeRouting:
+    """Sprint 3: routing rules for LIST, PAGE_FOOTER, PAGE_NUMBER, PAGE_HEADER."""
+
+    def test_list_routes_to_markdown(self) -> None:
+        decisions = route_blocks([_nb(BlockType.LIST, 0.8)])
+        assert decisions[0].action == "markdown"
+
+    def test_list_low_confidence_still_markdown(self) -> None:
+        decisions = route_blocks([_nb(BlockType.LIST, 0.1)])
+        assert decisions[0].action == "markdown"
+
+    def test_page_footer_routes_to_noise_filter(self) -> None:
+        decisions = route_blocks([_nb(BlockType.PAGE_FOOTER, 0.9)])
+        assert decisions[0].action == "noise_filter"
+
+    def test_page_footer_low_confidence_still_noise_filter(self) -> None:
+        decisions = route_blocks([_nb(BlockType.PAGE_FOOTER, 0.1)])
+        assert decisions[0].action == "noise_filter"
+
+    def test_page_number_routes_to_noise_filter(self) -> None:
+        decisions = route_blocks([_nb(BlockType.PAGE_NUMBER, 0.9)])
+        assert decisions[0].action == "noise_filter"
+
+    def test_page_number_low_confidence_still_noise_filter(self) -> None:
+        decisions = route_blocks([_nb(BlockType.PAGE_NUMBER, 0.2)])
+        assert decisions[0].action == "noise_filter"
+
+    def test_page_header_routes_to_noise_filter(self) -> None:
+        decisions = route_blocks([_nb(BlockType.PAGE_HEADER, 0.95)])
+        assert decisions[0].action == "noise_filter"
+
+    def test_page_header_low_confidence_still_noise_filter(self) -> None:
+        decisions = route_blocks([_nb(BlockType.PAGE_HEADER, 0.05)])
+        assert decisions[0].action == "noise_filter"
+
+    def test_noise_labels_have_high_priority(self) -> None:
+        """Noise routing rules should have priority=10 (not overridden by lower rules)."""
+        for bt in (BlockType.PAGE_FOOTER, BlockType.PAGE_NUMBER, BlockType.PAGE_HEADER):
+            decisions = route_blocks([_nb(bt, 0.5)])
+            assert decisions[0].action == "noise_filter"
+            assert "noise_filter" in decisions[0].rule_matched
+
+    def test_default_rules_contain_new_block_types(self) -> None:
+        """Verify DEFAULT_RULES includes rules for all new block types."""
+        rule_types = {r.block_type for r in DEFAULT_RULES}
+        assert BlockType.LIST in rule_types
+        assert BlockType.PAGE_FOOTER in rule_types
+        assert BlockType.PAGE_NUMBER in rule_types
+        assert BlockType.PAGE_HEADER in rule_types
+
+
 # ---- P0-5: extract_table_hints tests ----
 
 
