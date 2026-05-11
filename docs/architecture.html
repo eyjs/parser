@@ -1,0 +1,1073 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DocForge — 시스템 아키텍처</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #232736;
+    --border: #2e3347;
+    --text: #e4e6f0;
+    --text-dim: #8b90a5;
+    --accent: #6c8cff;
+    --accent2: #a78bfa;
+    --green: #4ade80;
+    --orange: #fb923c;
+    --red: #f87171;
+    --cyan: #22d3ee;
+    --pink: #f472b6;
+    --yellow: #facc15;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+
+  .header {
+    text-align: center;
+    padding: 48px 24px 32px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 8px;
+  }
+
+  .header h1 span { color: var(--accent); }
+
+  .header p {
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  .tabs {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    padding: 24px;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 100;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tab {
+    padding: 8px 20px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all .2s;
+  }
+
+  .tab:hover { border-color: var(--accent); color: var(--text); }
+  .tab.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  .view { display: none; padding: 32px 24px; max-width: 1200px; margin: 0 auto; }
+  .view.active { display: block; }
+
+  /* ── Overview Flow ── */
+  .flow-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    align-items: center;
+  }
+
+  .flow-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
+    max-width: 960px;
+  }
+
+  .flow-node {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    flex: 1;
+    min-width: 0;
+    transition: all .25s;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .flow-node:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(108, 140, 255, .12);
+  }
+
+  .flow-node .num {
+    position: absolute;
+    top: -10px;
+    left: 16px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+
+  .flow-node h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+
+  .flow-node p {
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  .flow-node .badge {
+    display: inline-block;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-top: 8px;
+    font-weight: 600;
+  }
+
+  .badge-file { background: rgba(108, 140, 255, .15); color: var(--accent); }
+  .badge-module { background: rgba(167, 139, 250, .15); color: var(--accent2); }
+  .badge-engine { background: rgba(74, 222, 128, .15); color: var(--green); }
+
+  .arrow-down {
+    display: flex;
+    justify-content: center;
+    padding: 8px 0;
+  }
+
+  .arrow-down svg { opacity: .4; }
+
+  /* ── Pipeline Detail ── */
+  .pipeline {
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    gap: 0;
+    position: relative;
+  }
+
+  .pipeline::before {
+    content: '';
+    position: absolute;
+    left: 27px;
+    top: 40px;
+    bottom: 40px;
+    width: 2px;
+    background: linear-gradient(to bottom, var(--accent), var(--accent2), var(--green));
+    opacity: .3;
+  }
+
+  .phase-marker {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 24px;
+  }
+
+  .phase-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    background: var(--bg);
+    z-index: 1;
+  }
+
+  .phase-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 12px;
+    transition: all .25s;
+    cursor: pointer;
+  }
+
+  .phase-card:hover {
+    border-color: var(--accent);
+    box-shadow: 0 4px 16px rgba(108, 140, 255, .08);
+  }
+
+  .phase-card h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .phase-card h3 .tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+
+  .phase-card p { font-size: 12px; color: var(--text-dim); }
+
+  .phase-card .detail {
+    display: none;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+  }
+
+  .phase-card.expanded .detail { display: block; }
+
+  .detail-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+    align-items: flex-start;
+  }
+
+  .detail-row .label {
+    color: var(--accent);
+    min-width: 60px;
+    font-weight: 600;
+    font-size: 11px;
+  }
+
+  .detail-row .val { color: var(--text-dim); font-size: 11px; }
+
+  .code-ref {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 11px;
+    color: var(--cyan);
+    background: rgba(34, 211, 238, .08);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+
+  /* ── Page Processing Decision ── */
+  .decision-tree {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .dt-node {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 24px;
+    text-align: center;
+    min-width: 260px;
+    max-width: 400px;
+  }
+
+  .dt-node.decision {
+    border-color: var(--orange);
+    background: rgba(251, 146, 60, .06);
+  }
+
+  .dt-node.action {
+    border-color: var(--green);
+    background: rgba(74, 222, 128, .06);
+  }
+
+  .dt-node.skip {
+    border-color: var(--red);
+    background: rgba(248, 113, 113, .06);
+  }
+
+  .dt-node h4 { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .dt-node p { font-size: 11px; color: var(--text-dim); }
+
+  .dt-branch {
+    display: flex;
+    gap: 24px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .dt-branch-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-align: center;
+    padding: 4px 0;
+    font-weight: 600;
+  }
+
+  .dt-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 180px;
+    max-width: 240px;
+  }
+
+  /* ── API Endpoints ── */
+  .api-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .api-table th {
+    text-align: left;
+    padding: 12px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .api-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  .method {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-family: monospace;
+  }
+
+  .method-post { background: rgba(74, 222, 128, .15); color: var(--green); }
+  .method-get { background: rgba(108, 140, 255, .15); color: var(--accent); }
+  .method-sse { background: rgba(244, 114, 182, .15); color: var(--pink); }
+
+  /* ── Algo Blocks ── */
+  .algo-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-top: 16px;
+  }
+
+  .algo-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    transition: all .25s;
+  }
+
+  .algo-card:hover {
+    border-color: var(--accent);
+    box-shadow: 0 4px 16px rgba(108, 140, 255, .08);
+  }
+
+  .algo-card h4 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .algo-card h4 .icon { font-size: 18px; }
+
+  .algo-card ul {
+    list-style: none;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .algo-card ul li {
+    padding: 3px 0;
+    padding-left: 16px;
+    position: relative;
+  }
+
+  .algo-card ul li::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 10px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    opacity: .5;
+  }
+
+  .section-title {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 24px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .subsection {
+    margin-top: 32px;
+  }
+
+  .subsection h3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--accent);
+  }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    padding: 16px 24px;
+    background: var(--surface);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    margin-bottom: 24px;
+    font-size: 12px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+
+  /* ── Footer ── */
+  .footer {
+    text-align: center;
+    padding: 32px;
+    color: var(--text-dim);
+    font-size: 12px;
+    border-top: 1px solid var(--border);
+    margin-top: 48px;
+  }
+
+  @media (max-width: 768px) {
+    .flow-row { flex-direction: column; }
+    .dt-branch { flex-direction: column; align-items: center; }
+    .tabs { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Doc<span>Forge</span> System Architecture</h1>
+  <p>PDF Parsing Pipeline — 요청부터 결과까지의 전체 흐름</p>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-view="overview">전체 흐름</div>
+  <div class="tab" data-view="pipeline">7-Phase 파이프라인</div>
+  <div class="tab" data-view="page">페이지 처리 로직</div>
+  <div class="tab" data-view="algorithms">핵심 알고리즘</div>
+  <div class="tab" data-view="api">API 엔드포인트</div>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Overview                                                    -->
+<!-- ═════════════════════════════════════════════════════════════════ -->
+<div class="view active" id="overview">
+  <h2 class="section-title">End-to-End Request Flow</h2>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:var(--accent)"></div> 웹 레이어</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--accent2)"></div> 유스케이스</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div> 프로세싱 엔진</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--orange)"></div> 어댑터 (외부 연동)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:var(--cyan)"></div> 결과 반환</div>
+  </div>
+
+  <div class="flow-container">
+
+    <!-- Row 1: Client -->
+    <div class="flow-row" style="justify-content:center">
+      <div class="flow-node" style="max-width:420px;border-color:var(--accent)">
+        <div class="num" style="background:var(--accent)">1</div>
+        <h3>사용자 (브라우저 / API 클라이언트)</h3>
+        <p>PDF 파일 업로드 → <code>POST /api/parse</code><br>
+        멀티파일 지원 (<code>files[]</code> 필드)</p>
+        <span class="badge badge-file">routes.py → api_parse()</span>
+      </div>
+    </div>
+
+    <div class="arrow-down"><svg width="24" height="32" viewBox="0 0 24 32"><path d="M12 0v28m-6-6l6 6 6-6" stroke="#6c8cff" stroke-width="2" fill="none"/></svg></div>
+
+    <!-- Row 2: Web Layer -->
+    <div class="flow-row">
+      <div class="flow-node" style="border-color:var(--accent)">
+        <div class="num" style="background:var(--accent)">2</div>
+        <h3>Flask API + Worker Queue</h3>
+        <p>파일 저장 → TaskStore 등록 → ThreadPoolExecutor에 작업 제출</p>
+        <span class="badge badge-file">worker.py → submit_task()</span>
+      </div>
+      <div class="flow-node" style="border-color:var(--pink)">
+        <div class="num" style="background:var(--pink)">SSE</div>
+        <h3>실시간 진행률 스트림</h3>
+        <p><code>GET /api/parse/{id}/status</code><br>
+        ProgressTracker → Server-Sent Events<br>
+        페이지별 마크다운 즉시 전달</p>
+        <span class="badge" style="background:rgba(244,114,182,.15);color:var(--pink)">sse.py</span>
+      </div>
+    </div>
+
+    <div class="arrow-down"><svg width="24" height="32" viewBox="0 0 24 32"><path d="M12 0v28m-6-6l6 6 6-6" stroke="#a78bfa" stroke-width="2" fill="none"/></svg></div>
+
+    <!-- Row 3: Pipeline -->
+    <div class="flow-row" style="justify-content:center">
+      <div class="flow-node" style="max-width:520px;border-color:var(--accent2)">
+        <div class="num" style="background:var(--accent2)">3</div>
+        <h3>parse_pdf() — 7-Phase 파이프라인</h3>
+        <p>
+          <strong>[1]</strong> Document Intelligence (전체 페이지 전략 수립)<br>
+          <strong>[2]</strong> Profile Document (복잡도 판단)<br>
+          <strong>[3]</strong> Learn Noise Patterns (헤더/푸터 학습)<br>
+          <strong>[4]</strong> Document Statistics (평균 폰트/줄간격)<br>
+          <strong>[5]</strong> Parallel Page Processing (병렬 처리)<br>
+          <strong>[6]</strong> Cross-Page Table Merge<br>
+          <strong>[7]</strong> Markdown Assembly + Quality Metrics
+        </p>
+        <span class="badge badge-module">parse_pdf.py</span>
+      </div>
+    </div>
+
+    <div class="arrow-down"><svg width="24" height="32" viewBox="0 0 24 32"><path d="M12 0v28m-6-6l6 6 6-6" stroke="#4ade80" stroke-width="2" fill="none"/></svg></div>
+
+    <!-- Row 4: Per-Page -->
+    <div class="flow-row">
+      <div class="flow-node" style="border-color:var(--green)">
+        <div class="num" style="background:var(--green);color:#000">4a</div>
+        <h3>PageProcessor — 페이지별 처리</h3>
+        <p>분류 → 텍스트 추출/OCR → 노이즈 제거 → 구조화 → 테이블 추출 → 헤딩 감지</p>
+        <span class="badge badge-module">page_processor.py</span>
+      </div>
+      <div class="flow-node" style="border-color:var(--green)">
+        <div class="num" style="background:var(--green);color:#000">4b</div>
+        <h3>PipelineCoordinator — 병렬 실행</h3>
+        <p>ThreadPoolExecutor (CPU×2, max 32)<br>
+        OCR Semaphore로 동시 OCR 제한<br>
+        순서 보장 (page_idx 정렬)</p>
+        <span class="badge badge-module">pipeline_coordinator.py</span>
+      </div>
+    </div>
+
+    <div class="arrow-down"><svg width="24" height="32" viewBox="0 0 24 32"><path d="M12 0v28m-6-6l6 6 6-6" stroke="#fb923c" stroke-width="2" fill="none"/></svg></div>
+
+    <!-- Row 5: Adapters -->
+    <div class="flow-row">
+      <div class="flow-node" style="border-color:var(--orange)">
+        <div class="num" style="background:var(--orange);color:#000">5a</div>
+        <h3>PyMuPDF Reader</h3>
+        <p>텍스트 블록, 이미지, 페이지 메타데이터 추출</p>
+        <span class="badge badge-engine">pymupdf_reader.py</span>
+      </div>
+      <div class="flow-node" style="border-color:var(--orange)">
+        <div class="num" style="background:var(--orange);color:#000">5b</div>
+        <h3>Apple Vision OCR</h3>
+        <p>macOS 호스트의 VNRecognizeTextRequest 통해 스캔 페이지 인식</p>
+        <span class="badge badge-engine">apple_vision_ocr.py</span>
+      </div>
+      <div class="flow-node" style="border-color:var(--orange)">
+        <div class="num" style="background:var(--orange);color:#000">5c</div>
+        <h3>Cloud VLM</h3>
+        <p>OpenAI / Anthropic API<br>저신뢰 블록 보정 + 테이블 구조 복원</p>
+        <span class="badge badge-engine">host_vlm_engine.py</span>
+      </div>
+    </div>
+
+    <div class="arrow-down"><svg width="24" height="32" viewBox="0 0 24 32"><path d="M12 0v28m-6-6l6 6 6-6" stroke="#22d3ee" stroke-width="2" fill="none"/></svg></div>
+
+    <!-- Row 6: Output -->
+    <div class="flow-row" style="justify-content:center">
+      <div class="flow-node" style="max-width:480px;border-color:var(--cyan)">
+        <div class="num" style="background:var(--cyan);color:#000">6</div>
+        <h3>ParseResult 반환</h3>
+        <p>
+          <strong>Markdown</strong> — 구조화된 최종 문서<br>
+          <strong>Metadata</strong> — 페이지 수, 복잡도, OCR 여부<br>
+          <strong>Stats</strong> — 품질 메트릭, 테이블 수, 노이즈 제거량<br>
+          <strong>Pages[]</strong> — 페이지별 블록/테이블/신뢰도<br>
+        </p>
+        <span class="badge" style="background:rgba(34,211,238,.15);color:var(--cyan)">GET /api/parse/{id}/result</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Pipeline                                                    -->
+<!-- ═════════════════════════════════════════════════════════════════ -->
+<div class="view" id="pipeline">
+  <h2 class="section-title">7-Phase Pipeline Detail</h2>
+
+  <div class="pipeline">
+
+    <!-- Phase 1 -->
+    <div class="phase-marker"><div class="phase-dot" style="border-color:var(--accent)"></div></div>
+    <div class="phase-card" onclick="this.classList.toggle('expanded')">
+      <h3><span class="tag" style="background:rgba(108,140,255,.15);color:var(--accent)">Phase 1</span> Document Intelligence</h3>
+      <p>전체 문서 사전 스캔 — 페이지별 최적 전략 결정 (get_pixmap 없이 30초 이내)</p>
+      <div class="detail">
+        <div class="detail-row"><span class="label">파일</span><span class="val"><span class="code-ref">document_intelligence.py</span></span></div>
+        <div class="detail-row"><span class="label">입력</span><span class="val">fitz.Document (PyMuPDF)</span></div>
+        <div class="detail-row"><span class="label">분석</span><span class="val">text_density, garbled_ratio, table_count, image_count</span></div>
+        <div class="detail-row"><span class="label">출력</span><span class="val">DocumentStrategyReport — 페이지별 PageStrategy</span></div>
+        <div class="detail-row"><span class="label">전략</span><span class="val">
+          <strong>pymupdf_text</strong> (디지털) → <strong>apple_vision_ocr</strong> (저텍스트/깨짐) → <strong>vlm_full</strong> (최종 폴백) → <strong>skip</strong> (노이즈)
+        </span></div>
+        <div class="detail-row"><span class="label">임계값</span><span class="val">
+          text_density &lt; 0.05 → OCR, garbled_ratio &gt; 0.15 → OCR, image &gt; 3 → Surya
+        </span></div>
+      </div>
+    </div>
+
+    <!-- Phase 2 -->
+    <div class="phase-marker"><div class="phase-dot" style="border-color:var(--accent)"></div></div>
+    <div class="phase-card" onclick="this.classList.toggle('expanded')">
+      <h3><span class="tag" style="background:rgba(108,140,255,.15);color:var(--accent)">Phase 2</span> Profile Document</h3>
+      <p>문서 복잡도 프로파일링 — simple / moderate / complex 분류</p>
+      <div class="detail">
+        <div class="detail-row"><span class="label">파일</span><span class="val"><span class="code-ref">profile_document.py</span></span></div>
+        <div class="detail-row"><span class="label">기준</span><span class="val">테이블 비율, 이미지 비율, 폰트 다양성, 레이아웃 복잡도</span></div>
+        <div class="detail-row"><span class="label">출력</span><span class="val">DocumentProfile (complexity, recommended_parser)</span></div>
+      </div>
+    </div>
+
+    <!-- Phase 3 -->
+    <div class="phase-marker"><div class="phase-dot" style="border-color:var(--accent2)"></div></div>
+    <div class="phase-card" onclick="this.classList.toggle('expanded')">
+      <h3><span class="tag" style="background:rgba(167,139,250,.15);color:var(--accent2)">Phase 3</span> Learn Noise Patterns</h3>
+      <p>전체 문서에서 반복 헤더/푸터/페이지 번호 패턴 학습</p>
+      <div class="detail">
+        <div class="detail-row"><span class="label">파일</span><span class="val"><span class="code-ref">noise_detector.py</span></span></div>
+        <div class="detail-row"><span class="label">방법</span><span class="val">전 페이지 텍스트 블록의 y좌표 + 텍스트 유사도 클러스터링</span></div>
+        <div class="detail-row"><span class="label">출력</span><span class="val">LearnedPatterns (header_patterns, footer_patterns)</span></div>
+        <div class="detail-row"><span class="label">효과</span><span class="val">매 페이지마다 "보험약관 | OO생명" 같은 반복 텍스트 자동 제거</span></div>
+      </div>
+    </div>
+
+    <!-- Phase 4 -->
+    <div class="phase-marker"><div class="phase-dot" style="border-color:var(--accent2)"></div></div>
+    <div class="phase-card" onclick="this.classList.toggle('expanded')">
+      <h3><span class="tag" style="background:rgba(167,139,250,.15);color:var(--accent2)">Phase 4</span> Document Statistics</h3>
+      <p>전체 문서의 평균 폰트 크기, 줄 간격 계산 → 헤딩 감지 기준선</p>
+      <div class="detail">
+        <div class="detail-row"><span class="label">용도</span><span class="val">avg_font_size: 헤딩 판별의 상대 크기 기준, avg_line_gap: 단락 분리 기준</span></div>
+      </div>
+    </div>
+
+    <!-- Phase 5 -->
+    <div class="phase-marker"><div class="phase-dot" style="border-color:var(--green)"></div></div>
+    <div class="phase-card" onclick="this.classList.toggle('expanded')">
+      <h3><span class="tag" style="background:rgba(74,222,128,.15);color:var(--green)">Phase 5</span> Parallel Page Processing</h3>
+      <p>페이지별 병렬 처리 — 분류, 추출, 구조화, 테이블 추출을 동시 수행</p>
+      <div class="detail">
+        <div class="detail-row"><span class="label">파일</span><span class="val"><span class="code-ref">page_processor.py</span> + <span class="code-ref">pipeline_coordinator.py</span></span></div>
+        <div class="detail-row"><span class="label">병렬화</span><span class="val">ThreadPoolExecutor (workers = CPU×2, min 4, max 32)</span></div>
+        <div class="detail-row"><span class="label">OCR 제한</span><span class="val">Semaphore(max_ocr_workers) — macOS OCR 호스트 과부하 방지</span></div>
+        <div class="detail-row"><span class="label">SSE</span><span class="val">페이지 완료 시 on_page_done 콜백으로 즉시 마크다운 전송</span></div>
+        <div class="detail-row"><span class="label">서브단계</span><span class="val">
+          분류 → 텍스트 추출 → OCR (조건부) → 노이즈 제거 → 컬럼 감지 →
+          구조 분류 → 헤딩 감지 → 레이아웃 부스트 → 적응 재시도 → 테이블 추출 → VLM 폴백
+        </span></div>
+      </div>
+    </div>
+
+    <!-- Phase 6 -->
+    <div class="phase-marker"><div class="phase-dot" style="border-color:var(--orange)"></div></div>
+    <div class="phase-card" onclick="this.classList.toggle('expanded')">
+      <h3><span class="tag" style="background:rgba(251,146,60,.15);color:var(--orange)">Phase 6</span> Cross-Page Table Merge</h3>
+      <p>페이지 경계에서 잘린 테이블 병합 + 번호 매기기 헤딩 승격</p>
+      <div class="detail">
+        <div class="detail-row"><span class="label">파일</span><span class="val"><span class="code-ref">_parse_pdf_helpers.py</span></span></div>
+        <div class="detail-row"><span class="label">기준</span><span class="val">페이지 말미 테이블 + 다음 페이지 첫 테이블: 같은 컬럼 수 → 병합 후보</span></div>
+      </div>
+    </div>
+
+    <!-- Phase 7 -->
+    <div class="phase-marker"><div class="phase-dot" style="border-color:var(--cyan)"></div></div>
+    <div class="phase-card" onclick="this.classList.toggle('expanded')">
+      <h3><span class="tag" style="background:rgba(34,211,238,.15);color:var(--cyan)">Phase 7</span> Markdown Assembly + Quality</h3>
+      <p>블록 → 마크다운 변환, 테이블 GFM 렌더링, 품질 메트릭 산출</p>
+      <div class="detail">
+        <div class="detail-row"><span class="label">파일</span><span class="val"><span class="code-ref">markdown_assembler.py</span> + <span class="code-ref">quality_metrics.py</span></span></div>
+        <div class="detail-row"><span class="label">조립</span><span class="val">HeadingBlock → # 마크다운 헤딩, Table → GFM 파이프 테이블, TextBlock → 본문</span></div>
+        <div class="detail-row"><span class="label">메트릭</span><span class="val">parsed_pages, tables_found, noise_removed, elapsed_ms, anomalies[]</span></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Page Processing                                             -->
+<!-- ═════════════════════════════════════════════════════════════════ -->
+<div class="view" id="page">
+  <h2 class="section-title">페이지별 처리 의사결정 트리</h2>
+
+  <div class="decision-tree">
+
+    <div class="dt-node decision">
+      <h4>페이지 분류 (classify_page_with_blocks)</h4>
+      <p>char_count, has_images, image_ratio, blocks, raw_text 분석</p>
+    </div>
+
+    <div class="arrow-down"><svg width="24" height="24" viewBox="0 0 24 24"><path d="M12 0v20m-5-5l5 5 5-5" stroke="#fb923c" stroke-width="2" fill="none"/></svg></div>
+
+    <div class="dt-branch">
+      <div class="dt-col">
+        <div class="dt-branch-label" style="color:var(--red)">NOISE</div>
+        <div class="dt-node skip">
+          <h4>즉시 스킵</h4>
+          <p>char &lt; 10, 이미지 없음</p>
+        </div>
+      </div>
+      <div class="dt-col">
+        <div class="dt-branch-label" style="color:var(--yellow)">COVER / TOC</div>
+        <div class="dt-node" style="border-color:var(--yellow)">
+          <h4>원문 보존</h4>
+          <p>텍스트 그대로 유지<br>구조화 생략<br>## [표지] / ## [목차] 헤더</p>
+        </div>
+      </div>
+      <div class="dt-col">
+        <div class="dt-branch-label" style="color:var(--green)">DIGITAL</div>
+        <div class="dt-node action">
+          <h4>PyMuPDF 텍스트 추출</h4>
+          <p>폰트 정보 포함 블록 추출<br>→ 전체 후처리 파이프라인</p>
+        </div>
+      </div>
+      <div class="dt-col">
+        <div class="dt-branch-label" style="color:var(--orange)">SCANNED</div>
+        <div class="dt-node" style="border-color:var(--orange)">
+          <h4>Apple Vision OCR</h4>
+          <p>이미지 렌더링 → OCR<br>multi-pass VLM 보정<br>적응 재시도 루프</p>
+        </div>
+      </div>
+      <div class="dt-col">
+        <div class="dt-branch-label" style="color:var(--accent2)">MIXED</div>
+        <div class="dt-node" style="border-color:var(--accent2)">
+          <h4>PyMuPDF + OCR 병합</h4>
+          <p>디지털 블록 먼저 추출<br>OCR로 이미지 영역 보완<br>겹침 제거 (overlap check)</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down" style="margin-top:16px"><svg width="24" height="24" viewBox="0 0 24 24"><path d="M12 0v20m-5-5l5 5 5-5" stroke="#4ade80" stroke-width="2" fill="none"/></svg></div>
+
+    <div style="font-size:13px;color:var(--text-dim);text-align:center;margin:8px 0">DIGITAL / SCANNED / MIXED → 공통 후처리 파이프라인</div>
+
+    <div class="dt-branch" style="gap:12px">
+      <div class="dt-col" style="min-width:140px">
+        <div class="dt-node action" style="width:100%">
+          <h4>노이즈 제거</h4>
+          <p>학습된 헤더/푸터 패턴 매칭</p>
+        </div>
+      </div>
+      <div class="dt-col" style="min-width:140px">
+        <div class="dt-node action" style="width:100%">
+          <h4>컬럼 감지</h4>
+          <p>2단 레이아웃 → 읽기 순서 재정렬</p>
+        </div>
+      </div>
+      <div class="dt-col" style="min-width:140px">
+        <div class="dt-node action" style="width:100%">
+          <h4>구조 분류</h4>
+          <p>HEADING / TEXT / LIST 분류</p>
+        </div>
+      </div>
+      <div class="dt-col" style="min-width:140px">
+        <div class="dt-node action" style="width:100%">
+          <h4>줄 병합</h4>
+          <p>형태소 분석 기반 단락 병합</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow-down" style="margin-top:16px"><svg width="24" height="24" viewBox="0 0 24 24"><path d="M12 0v20m-5-5l5 5 5-5" stroke="#4ade80" stroke-width="2" fill="none"/></svg></div>
+
+    <div class="dt-branch" style="gap:12px">
+      <div class="dt-col" style="min-width:160px">
+        <div class="dt-node action" style="width:100%">
+          <h4>레이아웃 감지 (Surya)</h4>
+          <p>TABLE / FIGURE / CAPTION<br>영역 라벨링 + IoU 병합</p>
+        </div>
+      </div>
+      <div class="dt-col" style="min-width:160px">
+        <div class="dt-node action" style="width:100%">
+          <h4>적응 재시도</h4>
+          <p>garbled 블록 → OCR/VLM 재시도<br>품질 검증 루프</p>
+        </div>
+      </div>
+      <div class="dt-col" style="min-width:160px">
+        <div class="dt-node action" style="width:100%">
+          <h4>테이블 추출</h4>
+          <p>pdfplumber 3-전략<br>lines_strict → text → hint</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: Algorithms                                                  -->
+<!-- ═════════════════════════════════════════════════════════════════ -->
+<div class="view" id="algorithms">
+  <h2 class="section-title">핵심 알고리즘</h2>
+
+  <div class="algo-grid">
+
+    <div class="algo-card">
+      <h4>Document Intelligence</h4>
+      <ul>
+        <li><strong>text_density</strong> = len(text) / page_area</li>
+        <li><strong>garbled_ratio</strong> = 깨진 문자 비율 (CJK 범위 밖 + 제어문자)</li>
+        <li>density &lt; 0.05 + 이미지 있음 → OCR 전략</li>
+        <li>garbled &gt; 0.15 → OCR 전략</li>
+        <li>table 지표 &gt; 0 → Surya 레이아웃 감지 활성</li>
+      </ul>
+    </div>
+
+    <div class="algo-card">
+      <h4>페이지 분류</h4>
+      <ul>
+        <li><strong>COVER</strong>: page_idx ≤ 2, 블록 ≤ 10, 60%+ 중앙정렬, 큰 폰트</li>
+        <li><strong>TOC</strong>: 목차 키워드 + 60% 짧은 줄 + 40% 숫자 종결</li>
+        <li><strong>NOISE</strong>: 문자 &lt; 10, 이미지 없음</li>
+        <li><strong>SCANNED</strong>: 문자 &lt; 50, 이미지 있음</li>
+        <li><strong>MIXED</strong>: 이미지 면적 30-70%</li>
+        <li><strong>DIGITAL</strong>: 나머지 (기본값)</li>
+      </ul>
+    </div>
+
+    <div class="algo-card">
+      <h4>테이블 추출 (3-전략)</h4>
+      <ul>
+        <li><strong>Strategy 1</strong>: lines_strict — 테두리선 기반 (고정 tolerance)</li>
+        <li><strong>Strategy 2</strong>: text — 텍스트 정렬 기반 (DPI-adaptive tolerance)</li>
+        <li><strong>Strategy 3</strong>: Surya hint — TABLE 영역 bbox로 제한 추출</li>
+        <li><strong>필터</strong>: 면적 ≥80% → 레이아웃 테이블 제거</li>
+        <li><strong>필터</strong>: 열 ≥10 → 비정상 구조 제거</li>
+        <li><strong>필터</strong>: 평균 셀 &lt; 3자 → 파편화 제거</li>
+      </ul>
+    </div>
+
+    <div class="algo-card">
+      <h4>DPI Adaptive Tolerance</h4>
+      <ul>
+        <li><strong>수식</strong>: tolerance = round(base_tolerance × page_dpi / base_dpi)</li>
+        <li><strong>범위</strong>: clamp [3, 25]</li>
+        <li><strong>예시</strong>: 72dpi → 5pt, 150dpi → 10pt, 300dpi → 21pt</li>
+        <li>lines_strict에는 미적용 (선 좌표가 정확)</li>
+        <li>text 전략에만 적용 (정렬 허용 오차)</li>
+      </ul>
+    </div>
+
+    <div class="algo-card">
+      <h4>OCR Multi-Pass</h4>
+      <ul>
+        <li><strong>Pass 1</strong>: Apple Vision OCR (macOS 호스트)</li>
+        <li><strong>Pass 2</strong>: 저신뢰 블록 → VLM 크롭 보정</li>
+        <li><strong>적응 재시도</strong>: garbled 비율 높으면 OCR → VLM 순차 폴백</li>
+        <li>Semaphore로 동시 OCR 워커 수 제한</li>
+      </ul>
+    </div>
+
+    <div class="algo-card">
+      <h4>헤딩 감지 (4-신호 가중합)</h4>
+      <ul>
+        <li><strong>Surya label</strong>: 레이아웃 모델이 heading으로 분류</li>
+        <li><strong>height ratio</strong>: font_size / avg_font_size > 임계값</li>
+        <li><strong>regex</strong>: "제N조", "제N장" 등 법률 문서 패턴</li>
+        <li><strong>position</strong>: 페이지 상단 + 짧은 텍스트</li>
+        <li>OCR 페이지: font_size=0 → Surya + regex에 의존</li>
+      </ul>
+    </div>
+
+    <div class="algo-card">
+      <h4>노이즈 패턴 학습</h4>
+      <ul>
+        <li>전 페이지 상단/하단 블록 수집</li>
+        <li>텍스트 유사도 + y좌표 클러스터링</li>
+        <li>N/2 이상 페이지에 반복 → 패턴 확정</li>
+        <li>페이지 번호: 숫자만 / "- N -" 패턴 자동 감지</li>
+      </ul>
+    </div>
+
+    <div class="algo-card">
+      <h4>줄 병합 (형태소 분석)</h4>
+      <ul>
+        <li>Kiwi 한국어 형태소 분석기 사용</li>
+        <li>줄 끝 품사가 조사/어미 → 다음 줄과 병합</li>
+        <li>줄 끝 마침표/물음표 → 단락 분리</li>
+        <li>y좌표 간격 > avg_line_gap × 1.5 → 단락 분리</li>
+      </ul>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════════ -->
+<!-- VIEW: API                                                         -->
+<!-- ═════════════════════════════════════════════════════════════════ -->
+<div class="view" id="api">
+  <h2 class="section-title">API Endpoints</h2>
+
+  <table class="api-table">
+    <thead>
+      <tr><th>Method</th><th>Endpoint</th><th>설명</th><th>응답</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="method method-post">POST</span></td>
+        <td><code>/api/parse</code></td>
+        <td>PDF 업로드 + 파싱 시작 (단일/멀티파일)</td>
+        <td>202 — <code>{ task_id, task_ids[] }</code></td>
+      </tr>
+      <tr>
+        <td><span class="method method-sse">SSE</span></td>
+        <td><code>/api/parse/{id}/status</code></td>
+        <td>실시간 진행률 스트림 (재연결 시 catchup)</td>
+        <td>progress / page / done / error 이벤트</td>
+      </tr>
+      <tr>
+        <td><span class="method method-get">GET</span></td>
+        <td><code>/api/parse/{id}/result</code></td>
+        <td>파싱 완료 결과 조회</td>
+        <td>200 — <code>{ markdown, metadata, stats }</code></td>
+      </tr>
+      <tr>
+        <td><span class="method method-get">GET</span></td>
+        <td><code>/api/parse/{id}/export</code></td>
+        <td>마크다운 / 원본 PDF ZIP 다운로드</td>
+        <td>200 — ZIP 파일</td>
+      </tr>
+      <tr>
+        <td><span class="method method-get">GET</span></td>
+        <td><code>/api/parse/{id}/compare</code></td>
+        <td>버전 간 diff 비교</td>
+        <td>200 — <code>{ diff, versions[] }</code></td>
+      </tr>
+      <tr>
+        <td><span class="method method-get">GET</span></td>
+        <td><code>/v1/health</code></td>
+        <td>헬스체크 (Docker healthcheck 사용)</td>
+        <td>200 — <code>{ status: "ok" }</code></td>
+      </tr>
+      <tr>
+        <td><span class="method method-get">GET</span></td>
+        <td><code>/api/queue/status</code></td>
+        <td>작업 큐 상태 조회</td>
+        <td>200 — <code>{ pending, running, completed }</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="subsection">
+    <h3>SSE 이벤트 형식</h3>
+    <div class="algo-grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr))">
+      <div class="algo-card">
+        <h4>progress</h4>
+        <ul>
+          <li>message: "[3/7] Learning noise..."</li>
+          <li>pct: 0-100</li>
+        </ul>
+      </div>
+      <div class="algo-card">
+        <h4>page</h4>
+        <ul>
+          <li>page_num: 페이지 번호</li>
+          <li>markdown: 해당 페이지 마크다운</li>
+        </ul>
+      </div>
+      <div class="algo-card">
+        <h4>catchup</h4>
+        <ul>
+          <li>재연결 시 누적 상태 스냅샷</li>
+          <li>마크다운 제외 (REST로 별도 조회)</li>
+        </ul>
+      </div>
+      <div class="algo-card">
+        <h4>done / error</h4>
+        <ul>
+          <li>완료 또는 에러 종료</li>
+          <li>message + pct</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="subsection">
+    <h3>인증 체계</h3>
+    <div class="algo-grid" style="grid-template-columns: 1fr 1fr">
+      <div class="algo-card">
+        <h4>내부 요청 (Docker 네트워크)</h4>
+        <ul>
+          <li>CF-Connecting-IP 헤더 없음</li>
+          <li>인증 없이 모든 API 접근 가능</li>
+          <li>healthcheck 포함</li>
+        </ul>
+      </div>
+      <div class="algo-card">
+        <h4>외부 요청 (Cloudflare Tunnel)</h4>
+        <ul>
+          <li>CF-Connecting-IP 헤더 존재</li>
+          <li>DOCFORGE_EXTERNAL_AUTH=true 시</li>
+          <li>X-Internal-Key 헤더 필요</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  DocForge v2.0 — PDF Parsing Pipeline Architecture<br>
+  Generated 2026-05-11
+</div>
+
+<script>
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById(tab.dataset.view).classList.add('active');
+    });
+  });
+</script>
+</body>
+</html>

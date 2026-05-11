@@ -179,15 +179,22 @@ class PageProcessor:
                     noise=NoiseStats(), is_toc=True, ocr_used=False,
                 )
 
-            # COVER/TOC pages bypass the heavy classification pipeline.
-            # We preserve their text as-is (no heading hierarchy, no line
-            # merging) so the markdown serializer can render them under
-            # explicit ``## [표지]`` / ``## [목차]`` section headers.
+            # COVER/TOC pages bypass the heavy classification pipeline
+            # (heading hierarchy, line merging, structure classification)
+            # but still need layout analysis for correct reading order.
             if page_type in (PageType.COVER, PageType.TOC):
+                cover_blocks, cover_noise = noise_detector.filter_noise_from_blocks(
+                    preliminary_blocks, height, self._patterns, config,
+                )
+                col_layout = column_detector.detect_columns(cover_blocks, width)
+                if col_layout.num_columns > 1:
+                    cover_blocks = column_detector.reorder_blocks_by_columns(
+                        cover_blocks, col_layout,
+                    )
                 page_content = PageContent(
                     page_num=page_idx + 1,
                     page_type=page_type,
-                    blocks=tuple(preliminary_blocks),
+                    blocks=tuple(cover_blocks),
                     tables=(),
                     raw_text=raw_text,
                     width=width,
@@ -197,7 +204,7 @@ class PageProcessor:
                 return PageResult(
                     page_content=page_content,
                     tables_info=None,
-                    noise=NoiseStats(),
+                    noise=cover_noise,
                     is_toc=False,
                     ocr_used=False,
                 )
