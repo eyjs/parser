@@ -161,6 +161,17 @@ def parse_pdf(
     parsed_pages = _h.merge_cross_page_tables(parsed_pages, all_page_tables, config)
     parsed_pages = _h.promote_numbered_headings(parsed_pages)
 
+    # --- AST construction (opt-in via config.ast_enabled) ---
+    document_ast = None
+    if config.ast_enabled:
+        try:
+            from docforge.processing.ast_builder import build as build_ast
+
+            document_ast = build_ast(tuple(parsed_pages), source_file=str(pdf_path))
+            _log(f"       AST built: {len(document_ast.root.children)} top-level nodes")
+        except Exception:
+            logger.warning("AST build failed, continuing without AST", exc_info=True)
+
     _log("[7/7] Assembling markdown...")
     # on_page_done already fired per-page in the coordinator loop above —
     # don't double-emit here, just collect markdowns for finalization.
@@ -203,6 +214,7 @@ def parse_pdf(
         llm_fallback_records=tuple(llm_fallback_records),
         region_vlm_records=tuple(all_region_vlm_records),
         page_errors=tuple(page_errors),
+        ast=document_ast,
     )
 
 

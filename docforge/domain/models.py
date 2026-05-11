@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from docforge.domain.enums import BlockType, PageType
 from docforge.domain.value_objects import BBox, DocumentProfile, FontInfo
+
+if TYPE_CHECKING:
+    from docforge.domain.ast_nodes import DocumentAST
 
 
 @dataclass(frozen=True)
@@ -228,3 +232,4 @@ class ParseResult:
     llm_fallback_records: tuple[LLMFallbackRecord, ...] = ()
     region_vlm_records: tuple[RegionVLMRecord, ...] = ()
     page_errors: tuple[PageError, ...] = ()
+    ast: DocumentAST | None = None

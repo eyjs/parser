@@ -199,3 +199,9 @@ class ParserConfig:
     # Tighter for legal docs (where layout is dense), looser for academic
     # papers (where captions sit further from figures).
     caption_proximity_pt: float = 100.0
+
+    # Document AST: when True, build an AST from parsed pages and attach
+    # it to ParseResult.ast.  The legacy markdown_assembler path is always
+    # used for Markdown output regardless of this flag (AST renderer is
+    # not yet the default Markdown producer).
+    ast_enabled: bool = True
