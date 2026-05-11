@@ -191,16 +191,32 @@ def assemble_page(
 
     image_dir = config.image_output_dir
 
+    page_height = getattr(page, "height", 0.0) or 0.0
+
     for _, elem_type, elem in elements:
         if elem_type == "image":
             from docforge.domain.models import ParsedImage as _PI
 
             assert isinstance(elem, _PI)
-            md_img = _image_to_markdown(elem, image_dir)
-            if md_img:
+
+            # If alt_text is present, output text instead of image reference
+            extracted = (elem.alt_text or "").strip()
+            if extracted:
+                classification = _classify_image_text(
+                    extracted, elem, page_height,
+                )
                 parts.append("")
-                parts.append(md_img)
+                if classification == "heading":
+                    parts.append(f"# {extracted}")
+                else:
+                    parts.append(extracted)
                 parts.append("")
+            else:
+                md_img = _image_to_markdown(elem, image_dir)
+                if md_img:
+                    parts.append("")
+                    parts.append(md_img)
+                    parts.append("")
             continue
         if elem_type == "table":
             assert isinstance(elem, Table)
@@ -235,6 +251,29 @@ def assemble_page(
                 parts.append(text)
 
     return "\n".join(parts)
+
+
+def _classify_image_text(
+    text: str,
+    image: ParsedImage,
+    page_height: float,
+) -> str:
+    """Classify extracted image text as heading or body.
+
+    Returns ``"heading"`` when ALL of these conditions hold:
+      - text length <= 60 characters
+      - no period (``.``) or comma (``,``)
+      - image is in the top 20 % of the page (``bbox.y0 / page_height <= 0.2``)
+
+    Otherwise returns ``"body"``.
+    """
+    if len(text) > 60:
+        return "body"
+    if "." in text or "," in text:
+        return "body"
+    if page_height > 0 and image.bbox.y0 / page_height > 0.2:
+        return "body"
+    return "heading"
 
 
 def _image_to_markdown(image, image_dir: str | None) -> str:

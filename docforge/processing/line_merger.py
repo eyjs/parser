@@ -58,6 +58,11 @@ def merge_lines(
     current_font = blocks[0].font
     current_type = blocks[0].block_type
     current_level = blocks[0].heading_level
+    # P0-7: Track block boundaries for cross-block spacing.
+    # block_boundaries[i] = True means current_texts[i] comes from a
+    # different source block than current_texts[i-1].
+    current_block_ids: list[str | None] = [blocks[0].block_id]
+    block_boundaries: list[bool] = []
 
     for i in range(1, len(blocks)):
         prev_block = blocks[i - 1]
@@ -68,7 +73,7 @@ def merge_lines(
             morpheme_analyzer=morpheme_analyzer,
         ):
             # Flush the accumulated paragraph
-            merged_text = _join_texts(current_texts)
+            merged_text = _join_texts(current_texts, block_boundaries or None)
             if merged_text:
                 result.append(TextBlock(
                     text=merged_text,
@@ -89,12 +94,26 @@ def merge_lines(
             current_font = curr_block.font
             current_type = curr_block.block_type
             current_level = curr_block.heading_level
+            current_block_ids = [curr_block.block_id]
+            block_boundaries = []
         else:
             # Merge into current paragraph
             current_texts.append(curr_block.text.strip())
+            # P0-7: Detect cross-block boundary. When both blocks have
+            # a block_id and they differ, text originates from different
+            # extraction regions and needs space insertion.
+            prev_id = current_block_ids[-1]
+            curr_id = curr_block.block_id
+            is_boundary = (
+                prev_id is not None
+                and curr_id is not None
+                and prev_id != curr_id
+            )
+            block_boundaries.append(is_boundary)
+            current_block_ids.append(curr_id)
 
     # Flush the last paragraph
-    merged_text = _join_texts(current_texts)
+    merged_text = _join_texts(current_texts, block_boundaries or None)
     if merged_text:
         last_block = blocks[-1]
         result.append(TextBlock(
@@ -129,7 +148,10 @@ _DASH_CONTINUATION_RE = re.compile(r"[-–—]\s*$")
 _COMMA_END_RE = re.compile(r",\s*$")
 
 
-def _join_texts(texts: list[str]) -> str:
+def _join_texts(
+    texts: list[str],
+    block_boundaries: list[bool] | None = None,
+) -> str:
     """Join text fragments with smart spacing for Korean/English mixed text.
 
     Rules:
@@ -138,6 +160,13 @@ def _join_texts(texts: list[str]) -> str:
     3. English-English or English-Korean: join with space
     4. Open bracket at end: join without space to close bracket
     5. Comma at end: join with space (list continuation)
+    6. Cross-block boundary (P0-7): always insert space even for Korean-Korean
+
+    Args:
+        texts: Text fragments to join.
+        block_boundaries: When provided, ``block_boundaries[i]`` is True when
+            ``texts[i]`` comes from a different source block than ``texts[i-1]``.
+            At a boundary, a space is always inserted to prevent "sticky text".
     """
     if not texts:
         return ""
@@ -145,6 +174,15 @@ def _join_texts(texts: list[str]) -> str:
     parts = [t for t in texts if t]
     if not parts:
         return ""
+
+    # Build an index mapping from filtered parts back to the boundary info.
+    # We need to know which original index each *non-empty* part came from.
+    boundary_flags: list[bool] | None = None
+    if block_boundaries is not None:
+        boundary_flags = []
+        for t, is_boundary in zip(texts, [False] + list(block_boundaries)):
+            if t:
+                boundary_flags.append(is_boundary)
 
     result = parts[0]
     for i in range(1, len(parts)):
@@ -154,6 +192,14 @@ def _join_texts(texts: list[str]) -> str:
             result = result + curr
             continue
 
+        # P0-7: Cross-block boundary — always insert space to prevent
+        # Korean characters from different extraction regions sticking together.
+        is_cross_block = (
+            boundary_flags is not None
+            and i < len(boundary_flags)
+            and boundary_flags[i]
+        )
+
         prev_ends_hangul = bool(_HANGUL_SYLLABLE_RE.match(prev[-1]))
         curr_starts_hangul = bool(_HANGUL_SYLLABLE_RE.match(curr[0]))
         prev_ends_sentence = bool(_SENTENCE_END_RE.search(prev))
@@ -161,6 +207,9 @@ def _join_texts(texts: list[str]) -> str:
         # Bracket continuation: join without extra space
         if _OPEN_BRACKET_RE.search(prev) or _CLOSE_BRACKET_RE.match(curr):
             result = result + curr
+        elif is_cross_block:
+            # Different source blocks — always use space separator
+            result = result + " " + curr
         elif prev_ends_hangul and curr_starts_hangul and not prev_ends_sentence:
             # Mid-word Korean line break: join without space
             result = result + curr
@@ -234,6 +283,16 @@ def _should_split(
 
     if not curr_text or not prev_text:
         return True
+
+    # --- P0-7: Forced vertical gap split (highest priority) ---
+    # When the gap between blocks exceeds line_height * split_factor,
+    # the blocks are structurally separate — never merge them regardless
+    # of bracket / comma / dash continuation signals.
+    line_height = prev.bbox.y1 - prev.bbox.y0
+    if line_height > 0:
+        gap = curr.bbox.y0 - prev.bbox.y1
+        if gap >= line_height * config.line_height_split_factor:
+            return True
 
     # --- Strong merge conditions (highest priority) ---
 

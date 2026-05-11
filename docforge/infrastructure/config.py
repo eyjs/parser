@@ -164,9 +164,19 @@ class ParserConfig:
     # "korean_legal" (default) | "english_academic"
     domain_profile: str = "korean_legal"
 
-    # Phase B-1: Layout detection (Surya). Off by default — opt-in.
-    layout_detection_enabled: bool = False
+    # Phase B-1: Layout detection (Surya). On by default since P0-5
+    # (borderless table detection requires Surya TABLE hints).
+    layout_detection_enabled: bool = True
     layout_iou_threshold: float = 0.3
+
+    # P0-6: Adaptive tolerance for borderless table detection.
+    # When True, snap_tolerance and join_tolerance are scaled by DPI ratio.
+    adaptive_tolerance_enabled: bool = True
+    base_dpi: int = 72  # Reference DPI for tolerance scaling
+
+    # P0-7: Line height split factor for forced paragraph separation.
+    # When vertical gap >= line_height * this factor, force split.
+    line_height_split_factor: float = 1.2
 
     # Phase B-2: Image handling
     # ``image_placeholders_enabled`` (default True): always detect image

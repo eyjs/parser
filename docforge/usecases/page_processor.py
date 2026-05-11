@@ -274,6 +274,7 @@ class PageProcessor:
             # where font_size=0.0 makes text_structurer blind.
             layout_blocks = self._maybe_detect_layout(
                 reader, doc, page_idx, page_type=effective_type,
+                page_strategy=page_strategy,
             )
             if page_ocr_used:
                 merged_blocks = self._apply_heading_detector(
@@ -318,8 +319,17 @@ class PageProcessor:
                     reader, doc, ocr_semaphore, width, height,
                 )
 
+            # P0-5: Extract Surya TABLE hint bboxes for pdfplumber.
+            table_hint_bboxes: list | None = None
+            if layout_blocks:
+                from docforge.processing.layout_router import extract_table_hints
+
+                table_hint_bboxes = extract_table_hints(layout_blocks) or None
+
             page_tables = table_extractor.extract_from_page(
                 plumber_doc, page_idx, page_width=width, page_height=height,
+                table_hint_bboxes=table_hint_bboxes,
+                page_dpi=config.dpi,
             )
 
             # Phase 2: PaddleTable removed. Scanned pages without
@@ -448,6 +458,7 @@ class PageProcessor:
         doc: object,
         page_idx: int,
         page_type: PageType = PageType.DIGITAL,
+        page_strategy: "PageStrategy | None" = None,
     ):
         """Run layout detection if applicable.
 
@@ -458,6 +469,8 @@ class PageProcessor:
           only ``SCANNED`` and ``MIXED`` pages trigger Surya.  Digital
           pages already have reliable font/structure metadata and do not
           benefit from the extra cost.
+        - **Exception**: Digital pages with ``table_heavy`` estimated
+          complexity also trigger Surya for TABLE hint extraction.
         """
         import logging as _logging
 
@@ -474,8 +487,12 @@ class PageProcessor:
         if not detector.is_available():
             return []
 
-        # Phase 2: conditional activation -- SCANNED/MIXED only
-        if page_type not in (PageType.SCANNED, PageType.MIXED):
+        is_table_heavy = (
+            page_strategy is not None
+            and page_strategy.estimated_complexity == "table_heavy"
+        )
+
+        if page_type not in (PageType.SCANNED, PageType.MIXED) and not is_table_heavy:
             _logger.debug(
                 "Skipping layout detection for %s page (page_idx=%d)",
                 page_type.value,

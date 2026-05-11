@@ -237,6 +237,19 @@ def bbox_iou(a: BBox, b: BBox) -> float:
     return a.iou(b)
 
 
+def extract_table_hints(layout_blocks: list[LayoutBlock]) -> list[BBox]:
+    """Extract bounding boxes from layout blocks labelled as ``Table``.
+
+    Used by the page processor to pass Surya TABLE regions as hints
+    to pdfplumber for borderless-table extraction (P0-5).
+
+    Returns an empty list when no TABLE regions are found.
+    """
+    if not layout_blocks:
+        return []
+    return [lb.bbox for lb in layout_blocks if lb.label == "Table"]
+
+
 __all__ = [
     "DEFAULT_IOU_THRESHOLD",
     "DEFAULT_RULES",
@@ -244,6 +257,7 @@ __all__ = [
     "RoutingRule",
     "bbox_iou",
     "build_layout_label_map",
+    "extract_table_hints",
     "merge_and_label",
     "merge_layout_with_text",
     "route_blocks",

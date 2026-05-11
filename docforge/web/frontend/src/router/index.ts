@@ -5,22 +5,27 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      name: 'dashboard',
-      component: () => import('@/views/DashboardView.vue'),
+      name: 'home',
+      component: () => import('@/components/layout/AppLayout.vue'),
     },
     {
+      // Backward-compatible redirect: /viewer/:taskId -> /?task=:taskId
       path: '/viewer/:taskId',
-      name: 'viewer',
-      component: () => import('@/views/ViewerView.vue'),
-      meta: { fullWidth: true },
+      redirect: (to) => ({
+        path: '/',
+        query: { task: to.params.taskId as string },
+      }),
     },
     {
       // Backward-compatible redirect
       path: '/verify/:taskId',
-      redirect: (to) => `/viewer/${to.params.taskId}`,
+      redirect: (to) => ({
+        path: '/',
+        query: { task: to.params.taskId as string },
+      }),
     },
     {
-      // Compare route deprecated, redirect to dashboard
+      // Compare route deprecated, redirect to home
       path: '/compare',
       redirect: '/',
     },

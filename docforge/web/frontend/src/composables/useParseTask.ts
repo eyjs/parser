@@ -15,10 +15,17 @@ export interface ParseTaskState {
   isConnected: Ref<boolean>
 }
 
+export interface ProgressInfo {
+  totalPages: number
+  completedPages: number
+  pct: number
+}
+
 export interface UseParseTaskOptions {
   getStatusUrl?: (taskId: string) => string
   onPageResult?: (page: number, markdown: string) => void
   onStageChange?: (stage: string) => void
+  onProgress?: (info: ProgressInfo) => void
   onDone?: () => void
   onError?: (message: string) => void
 }
@@ -63,6 +70,12 @@ export function useParseTask(
           pageMarkdowns.value = next
         }
         if (data.error_message) error.value = data.error_message as string
+        if (data.current_stage) options.onStageChange?.(data.current_stage as string)
+        options.onProgress?.({
+          totalPages: totalPages.value,
+          completedPages: completedPages.value,
+          pct: pct.value,
+        })
         break
       }
 
@@ -88,6 +101,11 @@ export function useParseTask(
         if (data.completed_pages != null) completedPages.value = data.completed_pages as number
         if (data.pct != null) pct.value = data.pct as number
         currentStage.value = 'pages'
+        options.onProgress?.({
+          totalPages: totalPages.value,
+          completedPages: completedPages.value,
+          pct: pct.value,
+        })
         break
       }
 

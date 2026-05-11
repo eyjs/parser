@@ -11,7 +11,9 @@ from docforge.domain.models import (
 )
 from docforge.domain.value_objects import BBox, FontInfo
 from docforge.infrastructure.config import ParserConfig
+from docforge.domain.models import ParsedImage
 from docforge.processing.markdown_assembler import (
+    _classify_image_text,
     _deduplicate_tables,
     assemble_page,
     finalize_markdown,
@@ -183,6 +185,155 @@ class TestPageAssembly:
         )
         md = assemble_page(page, 10.0, config)
         assert "① 보험계약자는" in md
+
+
+def _make_image(
+    alt_text: str | None = None,
+    page_num: int = 1,
+    block_id: str = "abc123",
+    y0: float = 50.0,
+    data: bytes = b"\x89PNG",
+    fmt: str = "png",
+    caption: str | None = None,
+) -> ParsedImage:
+    return ParsedImage(
+        bbox=BBox(x0=50.0, y0=y0, x1=200.0, y1=y0 + 100.0),
+        data=data,
+        format=fmt,
+        caption=caption,
+        page_num=page_num,
+        block_id=block_id,
+        alt_text=alt_text,
+    )
+
+
+class TestImageBlockTextPriority:
+    """Test that images with extracted text output text, not image references."""
+
+    def test_alt_text_image_outputs_text_only(self) -> None:
+        """Image with alt_text should output text, not ![alt](path)."""
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(_make_image(alt_text="추출된 텍스트 내용", y0=300.0),),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert "추출된 텍스트 내용" in md
+        assert "![" not in md
+        assert "]()" not in md
+
+    def test_no_alt_text_image_keeps_reference(self) -> None:
+        """Image without alt_text should keep the image markdown reference."""
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(_make_image(alt_text=None, y0=300.0),),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert "![" in md
+
+    def test_alt_text_with_data_prioritizes_text(self) -> None:
+        """Image with both alt_text and data should output text, not image."""
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(_make_image(
+                alt_text="이미지에서 추출한 텍스트",
+                data=b"\x89PNG\r\n\x1a\n",
+                y0=300.0,
+            ),),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert "이미지에서 추출한 텍스트" in md
+        assert "![" not in md
+
+
+class TestImageTextClassification:
+    """Test figure vs heading classification for extracted image text."""
+
+    def test_short_text_at_top_is_heading(self) -> None:
+        """Short text without punctuation at page top -> heading."""
+        img = _make_image(alt_text="문서 제목", y0=50.0)
+        result = _classify_image_text("문서 제목", img, page_height=800.0)
+        assert result == "heading"
+
+    def test_long_text_is_body(self) -> None:
+        """Text longer than 60 chars -> body regardless of position."""
+        long_text = "이것은 매우 긴 텍스트입니다 " * 5  # well over 60 chars
+        img = _make_image(alt_text=long_text, y0=50.0)
+        result = _classify_image_text(long_text.strip(), img, page_height=800.0)
+        assert result == "body"
+
+    def test_text_with_period_is_body(self) -> None:
+        """Text with period -> body regardless of length or position."""
+        img = _make_image(alt_text="설명 문장.", y0=50.0)
+        result = _classify_image_text("설명 문장.", img, page_height=800.0)
+        assert result == "body"
+
+    def test_heading_renders_as_h1(self) -> None:
+        """In assembled page, heading-classified text renders as # heading."""
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(_make_image(alt_text="문서 제목", y0=50.0),),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert "# 문서 제목" in md
+        assert "![" not in md
+
+    def test_body_renders_as_plain_text(self) -> None:
+        """In assembled page, body-classified text renders as plain text."""
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(_make_image(alt_text="그림 1. 시스템 구조도", y0=400.0),),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert "그림 1. 시스템 구조도" in md
+        assert "# " not in md
+        assert "![" not in md
+
+    def test_no_link_format_generated(self) -> None:
+        """Image with alt_text must never produce [text](path) link format."""
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(_make_image(alt_text="제목 텍스트", y0=50.0),),
+        )
+        md = assemble_page(page, 10.0, config)
+        # Must not contain markdown link format [text](url)
+        import re as _re
+        assert not _re.search(r"\[.*?\]\(.*?\)", md)
 
 
 class TestTableDeduplication:

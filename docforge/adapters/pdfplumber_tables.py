@@ -39,17 +39,25 @@ class PdfplumberTableExtractor:
         page_idx: int,
         page_width: float = 0.0,
         page_height: float = 0.0,
+        table_hint_bboxes: list[BBox] | None = None,
+        page_dpi: int | None = None,
     ) -> list[Table]:
         """Extract tables from a single page with fallback strategies.
 
         Strategy 1: lines_strict (most accurate for well-formed tables)
         Strategy 2: text-based detection (fallback for borderless tables)
+        Strategy 3: Surya TABLE hint bbox-constrained extraction (P0-5)
 
         Args:
             doc: pdfplumber PDF document.
             page_idx: Zero-based page index.
             page_width: Page width for layout table filtering (0 = auto).
             page_height: Page height for layout table filtering (0 = auto).
+            table_hint_bboxes: Surya TABLE region bboxes for hint-constrained
+                extraction. When provided, any hint region not covered by an
+                already-detected table triggers a bbox-constrained retry.
+            page_dpi: Document DPI for adaptive tolerance calculation (P0-6).
+                When None, falls back to fixed config values.
         """
         if page_idx >= len(doc.pages):
             return []
@@ -61,14 +69,24 @@ class PdfplumberTableExtractor:
             page_width = float(page.width)
             page_height = float(page.height)
 
-        # Strategy 1: lines_strict
+        # Strategy 1: lines_strict (fixed tolerance — lines are precise)
         tables = self._extract_with_strategy(page, "lines_strict")
         if tables:
-            return self._filter_layout_tables(tables, page_width, page_height)
+            tables = self._filter_layout_tables(tables, page_width, page_height)
+        else:
+            # Strategy 2: text-based with adaptive tolerance (P0-6)
+            tables = self._extract_with_strategy(page, "text", page_dpi=page_dpi)
+            tables = self._filter_layout_tables(tables, page_width, page_height)
 
-        # Strategy 2: text-based
-        tables = self._extract_with_strategy(page, "text")
-        return self._filter_layout_tables(tables, page_width, page_height)
+        # Strategy 3: Surya TABLE hint — attempt bbox-constrained extraction
+        # for hint regions not already covered by detected tables.
+        if table_hint_bboxes:
+            hint_tables = self._extract_from_hints(
+                page, tables, table_hint_bboxes, page_width, page_height,
+            )
+            tables.extend(hint_tables)
+
+        return tables
 
     def extract_from_image(self, image: Any) -> list[Table]:
         """Not supported by pdfplumber - returns empty list.
@@ -77,17 +95,51 @@ class PdfplumberTableExtractor:
         """
         return []
 
+    def _compute_adaptive_tolerance(
+        self,
+        page_dpi: int | None = None,
+    ) -> tuple[int, int]:
+        """Compute DPI-adaptive snap and join tolerances (P0-6).
+
+        For the ``text`` strategy (borderless tables), fixed tolerance
+        values cause missed detections on high-DPI scans and false
+        positives on low-DPI documents.  Scaling by DPI ratio keeps
+        the tolerance proportional to the document's spatial resolution.
+
+        Returns:
+            (snap_tolerance, join_tolerance) as integers clamped to [3, 15].
+        """
+        config = self._config
+        if not config.adaptive_tolerance_enabled or page_dpi is None:
+            return config.snap_tolerance, config.join_tolerance
+
+        base = max(config.base_dpi, 1)
+        scale = max(page_dpi, 72) / base
+        snap = round(config.snap_tolerance * scale)
+        join = round(config.join_tolerance * scale)
+        snap = max(3, min(25, snap))
+        join = max(3, min(25, join))
+        return snap, join
+
     def _extract_with_strategy(
         self,
         page: pdfplumber.page.Page,
         strategy: str,
+        page_dpi: int | None = None,
     ) -> list[Table]:
         """Extract tables using a specific strategy."""
+        # P0-6: Use adaptive tolerance for "text" strategy
+        if strategy == "text":
+            snap_tol, join_tol = self._compute_adaptive_tolerance(page_dpi)
+        else:
+            snap_tol = self._config.snap_tolerance
+            join_tol = self._config.join_tolerance
+
         settings = {
             "vertical_strategy": strategy,
             "horizontal_strategy": strategy,
-            "snap_tolerance": self._config.snap_tolerance,
-            "join_tolerance": self._config.join_tolerance,
+            "snap_tolerance": snap_tol,
+            "join_tolerance": join_tol,
             "edge_min_length": self._config.edge_min_length,
             "min_words_vertical": 1,
             "min_words_horizontal": 1,
@@ -213,6 +265,101 @@ class PdfplumberTableExtractor:
             logger.debug("Merged cell detection failed", exc_info=True)
 
         return merged
+
+    def extract_from_bbox(
+        self,
+        page: pdfplumber.page.Page,
+        bbox: BBox,
+        page_width: float = 0.0,
+        page_height: float = 0.0,
+    ) -> list[Table]:
+        """Extract tables within a specific bounding box region.
+
+        Crops the page to the bbox region and runs text-strategy extraction
+        with the configured tolerances. Used for Surya TABLE hint-driven
+        extraction (P0-5/P0-6).
+
+        Args:
+            page: pdfplumber page object.
+            bbox: Region bounding box to constrain extraction.
+            page_width: Page width for layout filtering (0 = auto).
+            page_height: Page height for layout filtering (0 = auto).
+        """
+        if page_width <= 0 or page_height <= 0:
+            page_width = float(page.width)
+            page_height = float(page.height)
+
+        try:
+            cropped = page.crop((bbox.x0, bbox.y0, bbox.x1, bbox.y1))
+        except Exception:
+            logger.debug(
+                "Failed to crop page for bbox (%.1f,%.1f,%.1f,%.1f)",
+                bbox.x0, bbox.y0, bbox.x1, bbox.y1,
+            )
+            return []
+
+        tables = self._extract_with_strategy(cropped, "text")
+        if not tables:
+            return []
+
+        # Re-map table bboxes from cropped coordinates back to page coordinates
+        remapped: list[Table] = []
+        for table in tables:
+            adjusted_bbox = BBox(
+                x0=table.bbox.x0 + bbox.x0,
+                y0=table.bbox.y0 + bbox.y0,
+                x1=table.bbox.x1 + bbox.x0,
+                y1=table.bbox.y1 + bbox.y0,
+            )
+            remapped.append(Table(
+                cells=table.cells,
+                rows=table.rows,
+                cols=table.cols,
+                bbox=adjusted_bbox,
+                confidence=table.confidence,
+                needs_review=table.needs_review,
+            ))
+
+        return self._filter_layout_tables(remapped, page_width, page_height)
+
+    def _extract_from_hints(
+        self,
+        page: pdfplumber.page.Page,
+        existing_tables: list[Table],
+        hint_bboxes: list[BBox],
+        page_width: float,
+        page_height: float,
+    ) -> list[Table]:
+        """Extract tables from Surya TABLE hint regions not already covered.
+
+        For each hint bbox, checks whether an existing table already overlaps
+        (IoU > 0.3). If not, attempts bbox-constrained extraction.
+        """
+        iou_threshold = 0.3
+        new_tables: list[Table] = []
+
+        for hint_bbox in hint_bboxes:
+            # Check if any existing table already covers this hint
+            covered = any(
+                hint_bbox.iou(t.bbox) > iou_threshold
+                for t in existing_tables
+            )
+            if covered:
+                continue
+
+            hint_tables = self.extract_from_bbox(
+                page, hint_bbox, page_width, page_height,
+            )
+            if hint_tables:
+                new_tables.extend(hint_tables)
+                logger.info(
+                    "Surya TABLE hint extracted %d table(s) from bbox "
+                    "(%.1f,%.1f,%.1f,%.1f)",
+                    len(hint_tables),
+                    hint_bbox.x0, hint_bbox.y0, hint_bbox.x1, hint_bbox.y1,
+                )
+
+        return new_tables
 
     def _filter_layout_tables(
         self,

@@ -29,10 +29,8 @@ const uploadError = ref<string | null>(null)
 
 const currentTaskId = computed(() => {
   const route = router.currentRoute.value
-  if (route.name === 'viewer') {
-    return route.params.taskId as string
-  }
-  return null
+  const q = route.query.task
+  return typeof q === 'string' && q ? q : null
 })
 
 const allTasks = computed<HistoryEntry[]>(() => {
@@ -55,7 +53,7 @@ const allTasks = computed<HistoryEntry[]>(() => {
 
 function onCardClick(task: HistoryEntry) {
   if (task.status === 'done') {
-    router.push(`/viewer/${task.taskId}`)
+    router.push({ query: { task: task.taskId } })
   }
 }
 
@@ -74,7 +72,7 @@ async function onFileChange(event: Event) {
     const taskIds = response.task_ids ?? [response.task_id]
     for (let i = 0; i < taskIds.length; i++) {
       const filename = files[i]?.name ?? `file-${i + 1}.pdf`
-      taskStore.addTask(taskIds[i], filename)
+      taskStore.trackTask(taskIds[i], filename)
     }
     historyStore.fetchHistory()
   } catch (e) {

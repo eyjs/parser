@@ -156,13 +156,23 @@ def is_cover_page(
     return centered / len(blocks) >= _COVER_MIN_CENTER_RATIO
 
 
+def _has_toc_keyword(raw_text: str) -> bool:
+    """Check for TOC keywords that indicate a genuine table-of-contents page.
+
+    Navigation links like "☞ 목차로 돌아가기" appear on most pages —
+    strip them before checking so they don't cause false positives.
+    """
+    cleaned = re.sub(r"목차로\s*돌아가기", "", raw_text)
+    return any(keyword in cleaned for keyword in _TOC_KEYWORDS)
+
+
 def is_toc_page(blocks: list[TextBlock], raw_text: str) -> bool:
     """Return True when the page looks like a table of contents.
 
     Triggers if any keyword marker is present OR the structural
     short-row + right-aligned-number heuristic fires.
     """
-    if any(keyword in raw_text for keyword in _TOC_KEYWORDS):
+    if _has_toc_keyword(raw_text):
         return True
 
     if not blocks or len(blocks) < _TOC_MIN_BLOCKS:

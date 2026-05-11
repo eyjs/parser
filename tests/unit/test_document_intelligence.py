@@ -308,10 +308,10 @@ class TestEstimateComplexity:
         result = _estimate_complexity(table_count=3, image_count=4)
         assert result == "mixed"
 
-    def test_boundary_tables_exactly_threshold_is_simple(self) -> None:
-        # table_count=2 is NOT > 2 -> not table_heavy
+    def test_boundary_tables_exactly_threshold_is_table_heavy(self) -> None:
+        # table_count=2 is > 0 -> table_heavy (threshold lowered for borderless tables)
         result = _estimate_complexity(table_count=2, image_count=0)
-        assert result == "simple"
+        assert result == "table_heavy"
 
     def test_boundary_images_exactly_threshold_is_simple(self) -> None:
         # image_count=3 is NOT > 3 -> not image_heavy

@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { ref, shallowRef, computed, onUnmounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { uploadFiles } from '@/api/client'
-import { useParseTask } from '@/composables/useParseTask'
 import { useTaskStore } from '@/stores/task'
 import { useHistoryStore } from '@/stores/history'
 import DropZone from '@/components/dashboard/DropZone.vue'
@@ -10,31 +9,40 @@ import QueueBanner from '@/components/dashboard/QueueBanner.vue'
 import LivePreview from '@/components/dashboard/LivePreview.vue'
 import BaseAlert from '@/components/common/BaseAlert.vue'
 
-type ParseTaskReturn = ReturnType<typeof useParseTask>
-
 const router = useRouter()
 const taskStore = useTaskStore()
 const historyStore = useHistoryStore()
 
 const uploadError = ref<string | null>(null)
-const activeParseTasks = shallowRef<Map<string, ParseTaskReturn>>(new Map())
+const lastUploadedTaskIds = ref<string[]>([])
 
-onUnmounted(() => {
-  for (const task of activeParseTasks.value.values()) {
-    task.disconnect()
-  }
+const primaryTaskId = computed(() => {
+  const ids = lastUploadedTaskIds.value
+  return ids.length > 0 ? ids[ids.length - 1] : null
 })
 
-const primaryTask = computed<ParseTaskReturn | null>(() => {
-  const tasks = Array.from(activeParseTasks.value.values())
-  return tasks.length > 0 ? tasks[tasks.length - 1] : null
+const primaryTask = computed(() => {
+  if (!primaryTaskId.value) return null
+  return taskStore.getTask(primaryTaskId.value) ?? null
 })
 
 const showLivePreview = computed(() => {
   const task = primaryTask.value
   if (!task) return false
-  return task.status.value !== 'done' && task.status.value !== 'error'
+  return task.status !== 'done' && task.status !== 'error'
 })
+
+watch(
+  () => primaryTask.value?.status,
+  (newStatus) => {
+    if (newStatus === 'done' && lastUploadedTaskIds.value.length === 1) {
+      const taskId = lastUploadedTaskIds.value[0]
+      setTimeout(() => {
+        router.push(`/viewer/${taskId}`)
+      }, 1200)
+    }
+  },
+)
 
 async function onFilesSelected(files: File[]) {
   uploadError.value = null
@@ -43,39 +51,11 @@ async function onFilesSelected(files: File[]) {
     const response = await uploadFiles(files)
     const taskIds = response.task_ids ?? [response.task_id]
 
+    lastUploadedTaskIds.value = taskIds
+
     for (let i = 0; i < taskIds.length; i++) {
-      const taskId = taskIds[i]
       const filename = files[i]?.name ?? `file-${i + 1}.pdf`
-
-      taskStore.addTask(taskId, filename)
-
-      const taskState = useParseTask(taskId, {
-        onPageResult(page, markdown) {
-          taskStore.setPageMarkdown(taskId, page, markdown)
-        },
-        onDone() {
-          taskStore.updateTask(taskId, { status: 'done', pct: 100 })
-          historyStore.fetchHistory()
-
-          if (taskIds.length === 1) {
-            setTimeout(() => {
-              router.push(`/viewer/${taskId}`)
-            }, 1200)
-          }
-        },
-        onError(message) {
-          taskStore.updateTask(taskId, { status: 'error', error: message })
-          historyStore.fetchHistory()
-        },
-        onStageChange(stage) {
-          taskStore.updateTask(taskId, { currentStage: stage })
-        },
-      })
-
-      const next = new Map(activeParseTasks.value)
-      next.set(taskId, taskState)
-      activeParseTasks.value = next
-      taskState.connect()
+      taskStore.trackTask(taskIds[i], filename)
     }
 
     historyStore.fetchHistory()
@@ -113,10 +93,10 @@ async function onFilesSelected(files: File[]) {
     <!-- Live preview -->
     <LivePreview
       v-if="showLivePreview && primaryTask"
-      :total-pages="primaryTask.totalPages.value"
-      :completed-pages="primaryTask.completedPages.value"
-      :current-stage="primaryTask.currentStage.value"
-      :page-markdowns="primaryTask.pageMarkdowns.value"
+      :total-pages="primaryTask.totalPages"
+      :completed-pages="primaryTask.completedPages"
+      :current-stage="primaryTask.currentStage"
+      :page-markdowns="primaryTask.pageMarkdowns"
     />
   </div>
 </template>

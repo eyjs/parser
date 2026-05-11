@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _TEXT_DENSITY_LOW = 0.05
 _GARBLED_RATIO_HIGH = 0.15
-_TABLE_COUNT_THRESHOLD = 2
+_TABLE_COUNT_THRESHOLD = 0
 _IMAGE_COUNT_THRESHOLD = 3
 _NOISE_TEXT_MIN = 10
 

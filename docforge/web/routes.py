@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import difflib
+import io
+import mimetypes
+import zipfile
 from pathlib import Path
 
 from flask import (
@@ -395,6 +399,132 @@ def api_export(task_id: str) -> Response:
         as_attachment=True,
         download_name=Path(record.filename).stem + ".md",
         mimetype="text/markdown",
+    )
+
+
+# ---------------------------------------------------------------------------
+# API: export with image processing (inline base64 / zip bundle)
+# ---------------------------------------------------------------------------
+
+_IMAGE_REF_PATTERN = re.compile(
+    r'(!\[[^\]]*\])\(/uploads/([^/]+)/images/([^)]+)\)',
+)
+
+
+def _process_export_markdown(
+    markdown_text: str,
+    task_id: str,
+    fmt: str,
+    upload_dir: Path,
+) -> tuple[str, list[tuple[str, Path]]]:
+    """Replace /uploads/ image paths for export.
+
+    Returns (processed_markdown, image_files_list).
+    image_files_list is populated only for fmt='zip'.
+    """
+    image_files: list[tuple[str, Path]] = []
+
+    if fmt == "inline":
+        def _replace_inline(match: re.Match) -> str:
+            alt_bracket = match.group(1)
+            tid = match.group(2)
+            img_name = match.group(3)
+            img_path = upload_dir / tid / "images" / img_name
+            # Prevent path traversal
+            try:
+                img_path.resolve().relative_to(upload_dir.resolve())
+            except ValueError:
+                return match.group(0)
+            if not img_path.exists():
+                return match.group(0)
+            mime = mimetypes.guess_type(img_name)[0] or "image/png"
+            data = base64.b64encode(img_path.read_bytes()).decode("ascii")
+            return f"{alt_bracket}(data:{mime};base64,{data})"
+
+        processed = _IMAGE_REF_PATTERN.sub(_replace_inline, markdown_text)
+        return processed, image_files
+
+    # fmt == "zip"
+    def _replace_zip(match: re.Match) -> str:
+        alt_bracket = match.group(1)
+        tid = match.group(2)
+        img_name = match.group(3)
+        img_path = upload_dir / tid / "images" / img_name
+        # Prevent path traversal
+        try:
+            img_path.resolve().relative_to(upload_dir.resolve())
+        except ValueError:
+            return match.group(0)
+        if img_path.exists():
+            image_files.append((img_name, img_path))
+        return f"{alt_bracket}(./images/{img_name})"
+
+    processed = _IMAGE_REF_PATTERN.sub(_replace_zip, markdown_text)
+    return processed, image_files
+
+
+@bp.route("/api/tasks/<task_id>/export")
+def api_task_export(task_id: str) -> Response:
+    """내보내기 API — 이미지 경로 처리 후 마크다운 제공.
+
+    Query params:
+        format: 'inline' (기본) — base64 인라인
+                'zip' — 마크다운 + images/ 폴더 zip 묶음
+    """
+    # Reject path traversal in task_id
+    if "/" in task_id or "\\" in task_id or ".." in task_id:
+        return jsonify({"success": False, "error": {"code": "INVALID_ID", "message": "잘못된 작업 ID입니다."}}), 400
+
+    store = _get_store()
+    record = store.get(task_id)
+    if record is None:
+        return jsonify({"success": False, "error": {"code": "NOT_FOUND", "message": "작업을 찾을 수 없습니다."}}), 404
+
+    if record.status != "done":
+        return jsonify({
+            "success": False,
+            "error": {"code": "NOT_READY", "message": f"아직 완료되지 않았습니다. 상태: {record.status}"},
+        }), 409
+
+    # Load markdown content
+    markdown_text = record.markdown
+    if not markdown_text and record.md_path and Path(record.md_path).exists():
+        markdown_text = Path(record.md_path).read_text(encoding="utf-8")
+    if not markdown_text:
+        return jsonify({"success": False, "error": {"code": "NO_CONTENT", "message": "마크다운 내용이 없습니다."}}), 404
+
+    upload_dir = Path(current_app.config["UPLOAD_DIR"])
+    fmt = request.args.get("format", "inline")
+    if fmt not in ("inline", "zip"):
+        fmt = "inline"
+
+    processed_md, image_files = _process_export_markdown(
+        markdown_text, task_id, fmt, upload_dir,
+    )
+
+    stem = Path(record.filename).stem
+
+    if fmt == "zip":
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{stem}.md", processed_md)
+            for img_name, img_path in image_files:
+                zf.write(str(img_path), f"images/{img_name}")
+        buf.seek(0)
+        return send_file(
+            buf,
+            as_attachment=True,
+            download_name=f"{stem}.zip",
+            mimetype="application/zip",
+        )
+
+    # inline — return processed markdown
+    return Response(
+        processed_md,
+        mimetype="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="{stem}.md"',
+        },
     )
 
 

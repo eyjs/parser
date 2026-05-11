@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { TaskStatus } from '@/api/types'
+import { useParseTask } from '@/composables/useParseTask'
+import { useHistoryStore } from '@/stores/history'
 
 export interface ActiveTask {
   taskId: string
@@ -15,10 +17,11 @@ export interface ActiveTask {
   startedAt: number
 }
 
+const sseConnections = new Map<string, { disconnect: () => void }>()
+
 export const useTaskStore = defineStore('task', () => {
   const activeTasks = ref<Map<string, ActiveTask>>(new Map())
 
-  // Getters
   const hasActiveTasks = computed(() => activeTasks.value.size > 0)
 
   const activeTaskList = computed(() =>
@@ -31,7 +34,6 @@ export const useTaskStore = defineStore('task', () => {
     return activeTasks.value.get(taskId)
   }
 
-  // Actions
   function addTask(taskId: string, filename: string) {
     const task: ActiveTask = {
       taskId,
@@ -56,7 +58,6 @@ export const useTaskStore = defineStore('task', () => {
     if (!existing) return
 
     const updated: ActiveTask = { ...existing, ...updates }
-    // Preserve pageMarkdowns reference since Partial<Omit> excludes it
     updated.pageMarkdowns = existing.pageMarkdowns
 
     const next = new Map(activeTasks.value)
@@ -83,13 +84,58 @@ export const useTaskStore = defineStore('task', () => {
   }
 
   function removeTask(taskId: string) {
+    sseConnections.get(taskId)?.disconnect()
+    sseConnections.delete(taskId)
     const next = new Map(activeTasks.value)
     next.delete(taskId)
     activeTasks.value = next
   }
 
   function clearAll() {
+    for (const conn of sseConnections.values()) {
+      conn.disconnect()
+    }
+    sseConnections.clear()
     activeTasks.value = new Map()
+  }
+
+  function trackTask(taskId: string, filename: string) {
+    if (sseConnections.has(taskId)) return
+
+    addTask(taskId, filename)
+
+    const historyStore = useHistoryStore()
+
+    const task = useParseTask(taskId, {
+      onProgress(info) {
+        updateTask(taskId, {
+          status: 'running',
+          pct: info.pct,
+          totalPages: info.totalPages,
+          completedPages: info.completedPages,
+        })
+      },
+      onStageChange(stage) {
+        updateTask(taskId, { currentStage: stage, status: 'running' })
+      },
+      onPageResult(page, markdown) {
+        setPageMarkdown(taskId, page, markdown)
+      },
+      onDone() {
+        updateTask(taskId, { status: 'done', pct: 100 })
+        sseConnections.delete(taskId)
+        historyStore.fetchHistory()
+        setTimeout(() => removeTask(taskId), 30_000)
+      },
+      onError(message) {
+        updateTask(taskId, { status: 'error', error: message })
+        sseConnections.delete(taskId)
+        historyStore.fetchHistory()
+      },
+    })
+
+    sseConnections.set(taskId, task)
+    task.connect()
   }
 
   return {
@@ -102,5 +148,6 @@ export const useTaskStore = defineStore('task', () => {
     setPageMarkdown,
     removeTask,
     clearAll,
+    trackTask,
   }
 })

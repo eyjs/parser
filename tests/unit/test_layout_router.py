@@ -11,6 +11,7 @@ from docforge.processing.layout_router import (
     RoutingRule,
     bbox_iou,
     build_layout_label_map,
+    extract_table_hints,
     merge_layout_with_text,
     route_blocks,
 )
@@ -181,3 +182,43 @@ class TestRouteBlocks:
         custom = [RoutingRule(BlockType.TEXT, 0.0, 1.01, "custom", priority=100)]
         decisions = route_blocks([_nb(BlockType.TEXT, 0.9)], rules=custom)
         assert decisions[0].action == "custom"
+
+
+# ---- P0-5: extract_table_hints tests ----
+
+
+class TestExtractTableHints:
+    """P0-5: extract TABLE bboxes from layout blocks."""
+
+    def test_empty_input_returns_empty(self) -> None:
+        assert extract_table_hints([]) == []
+
+    def test_none_input_returns_empty(self) -> None:
+        # Defensive: treat falsy input as empty
+        assert extract_table_hints([]) == []
+
+    def test_extracts_table_labels_only(self) -> None:
+        blocks = [
+            _lb("Table", 10, 100, 500, 300),
+            _lb("Text", 10, 310, 500, 400),
+            _lb("Figure", 10, 410, 500, 600),
+            _lb("Table", 10, 610, 500, 800),
+        ]
+        result = extract_table_hints(blocks)
+        assert len(result) == 2
+        assert result[0] == BBox(10, 100, 500, 300)
+        assert result[1] == BBox(10, 610, 500, 800)
+
+    def test_no_table_labels_returns_empty(self) -> None:
+        blocks = [
+            _lb("Text", 10, 100, 500, 200),
+            _lb("Figure", 10, 300, 500, 500),
+        ]
+        assert extract_table_hints(blocks) == []
+
+    def test_single_table(self) -> None:
+        blocks = [_lb("Table", 50, 200, 550, 400)]
+        result = extract_table_hints(blocks)
+        assert len(result) == 1
+        assert result[0].x0 == 50
+        assert result[0].y0 == 200

@@ -89,6 +89,15 @@ class TestTOCHeuristic:
         ]
         assert not is_toc_page(blocks, "")
 
+    def test_toc_nav_link_not_false_positive(self) -> None:
+        long_text = "보험금 지급 사유 및 제한 사항에 대한 상세 내용입니다"
+        blocks = [
+            _block(long_text, 50, 100 + i * 20, 500, 120 + i * 20)
+            for i in range(8)
+        ]
+        raw = "☞ 목차로 돌아가기\n" + long_text
+        assert not is_toc_page(blocks, raw)
+
 
 class TestClassifyPageWithBlocks:
     def test_cover_routes_to_cover(self) -> None:

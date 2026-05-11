@@ -180,3 +180,74 @@ class TestGarbledRatio:
         # Assert
         assert ratio > 0.7
         assert garbled is True
+
+
+class TestKoreanGarbledDetection:
+    """Korean-specific garbled text detection tests (P0-3)."""
+
+    def test_garbled_ocr_output_detected(self) -> None:
+        """Typical garbled Korean OCR output with digit-syllable mixing."""
+        text = "0서 서저 0노포가 으려하는 고"
+        ratio = garbled_ratio(text)
+        assert ratio >= 0.3, f"Expected garbled ratio >= 0.3, got {ratio}"
+        assert is_garbled_text(text) is True
+
+    def test_isolated_jamo_detected(self) -> None:
+        """Pure isolated jamo characters are garbled."""
+        text = "ㄱㄴㄷㄹ ㅁㅂㅅ ㅇㅈㅊ"
+        ratio = garbled_ratio(text)
+        assert ratio >= 0.3, f"Expected garbled ratio >= 0.3, got {ratio}"
+        assert is_garbled_text(text) is True
+
+    def test_digit_hangul_interleave_detected(self) -> None:
+        """Digits interleaved with Korean syllables: garbled."""
+        text = "7으3려2하1는"
+        ratio = garbled_ratio(text)
+        assert ratio >= 0.3, f"Expected garbled ratio >= 0.3, got {ratio}"
+        assert is_garbled_text(text) is True
+
+    def test_jamo_inserted_in_syllables_detected(self) -> None:
+        """Jamo inserted between syllables: garbled."""
+        text = "ㅂ텍ㄹ스트 ㅇ질"
+        ratio = garbled_ratio(text)
+        assert ratio >= 0.3, f"Expected garbled ratio >= 0.3, got {ratio}"
+        assert is_garbled_text(text) is True
+
+    def test_leading_zeros_garbled(self) -> None:
+        """Leading zeros mixed with garbled Korean: garbled."""
+        text = "0 0 0 서저노포가 으려하"
+        ratio = garbled_ratio(text)
+        assert ratio >= 0.3, f"Expected garbled ratio >= 0.3, got {ratio}"
+        assert is_garbled_text(text) is True
+
+    # --- False-positive prevention (normal Korean must NOT be flagged) ---
+
+    def test_normal_greeting_not_garbled(self) -> None:
+        """Standard Korean greeting is not garbled."""
+        text = "안녕하세요. 반갑습니다."
+        assert is_garbled_text(text) is False
+        assert garbled_ratio(text) < 0.3
+
+    def test_chapter_numbering_not_garbled(self) -> None:
+        """'제1장 서론' is a natural digit-Korean pattern."""
+        text = "제1장 서론"
+        assert is_garbled_text(text) is False
+        assert garbled_ratio(text) < 0.3
+
+    def test_date_expression_not_garbled(self) -> None:
+        """Date expressions like '2024년 3월' are natural."""
+        text = "2024년 3월 보고서"
+        assert is_garbled_text(text) is False
+        assert garbled_ratio(text) < 0.3
+
+    def test_price_expression_not_garbled(self) -> None:
+        """Price expressions like '10,000원' are natural."""
+        text = "가격: 10,000원"
+        assert is_garbled_text(text) is False
+        assert garbled_ratio(text) < 0.3
+
+    def test_address_with_numbers_not_garbled(self) -> None:
+        """Address with numbers is natural Korean."""
+        text = "서울특별시 강남구 테헤란로 123"
+        assert is_garbled_text(text) is False
+        assert garbled_ratio(text) < 0.3

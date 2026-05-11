@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import AppSidebar from './AppSidebar.vue'
+import MainArea from './MainArea.vue'
 
 const sidebarCollapsed = ref(false)
 </script>
@@ -12,7 +13,7 @@ const sidebarCollapsed = ref(false)
       @toggle="sidebarCollapsed = !sidebarCollapsed"
     />
     <main class="app-layout__main">
-      <slot />
+      <MainArea />
     </main>
   </div>
 </template>
@@ -30,8 +31,8 @@ const sidebarCollapsed = ref(false)
 }
 
 .app-layout__main {
-  padding: var(--space-4);
   overflow-y: auto;
   background: var(--color-bg);
+  height: 100vh;
 }
 </style>

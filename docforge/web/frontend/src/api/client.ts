@@ -169,6 +169,10 @@ export function getExportUrl(taskId: string): string {
   return `${API_BASE}/api/export/${taskId}`
 }
 
+export function getTaskExportUrl(taskId: string, format: 'inline' | 'zip' = 'inline'): string {
+  return `${API_BASE}/api/tasks/${taskId}/export?format=${format}`
+}
+
 // Queue endpoint
 
 export async function getQueueStatus(): Promise<QueueStatus> {
