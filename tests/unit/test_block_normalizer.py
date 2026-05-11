@@ -6,6 +6,7 @@ from docforge.domain.enums import BlockType
 from docforge.domain.models import LayoutBlock, NormalizedBlock, TextBlock
 from docforge.domain.value_objects import BBox, FontInfo
 from docforge.processing.block_normalizer import (
+    LAYOUT_LABEL_MAP,
     SURYA_LABEL_MAP,
     merge_normalized,
     normalize_layout_block,
@@ -157,7 +158,15 @@ class TestSuryaLabelMap:
     def test_all_expected_labels_mapped(self) -> None:
         expected = {
             "Table", "Figure", "Picture", "Title",
-            "Section-header", "Caption", "Text",
-            "Formula", "Equation",
+            "Section-header", "Section-Header", "SectionHeader",
+            "Caption", "Text", "Formula", "Equation",
+            "List", "List-item",
+            "Footer", "Page-Footer",
+            "Page-Header", "Header",
+            "Page-Number",
+            "Footnote",
         }
-        assert set(SURYA_LABEL_MAP.keys()) == expected
+        assert set(LAYOUT_LABEL_MAP.keys()) == expected
+
+    def test_surya_alias(self) -> None:
+        assert SURYA_LABEL_MAP is LAYOUT_LABEL_MAP

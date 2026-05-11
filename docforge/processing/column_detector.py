@@ -2,6 +2,10 @@
 
 Analyzes text block x-coordinates to detect 2/3-column layouts and
 reorders blocks from left-to-right, top-to-bottom within each column.
+
+When ML layout blocks (Docling/Surya) are available,
+``reorder_blocks_by_layout`` uses their reading order instead of
+heuristic gap analysis.
 """
 
 from __future__ import annotations
@@ -10,7 +14,7 @@ import logging
 from dataclasses import dataclass
 from typing import Sequence
 
-from docforge.domain.models import TextBlock
+from docforge.domain.models import LayoutBlock, TextBlock
 
 logger = logging.getLogger(__name__)
 
@@ -188,3 +192,51 @@ def _assign_to_column(block: TextBlock, layout: ColumnLayout) -> int:
             best_col = i
 
     return best_col
+
+
+def reorder_blocks_by_layout(
+    blocks: list[TextBlock],
+    layout_blocks: list[LayoutBlock],
+    iou_threshold: float = 0.3,
+) -> list[TextBlock]:
+    """Reorder text blocks to match ML layout-block reading order.
+
+    For each layout block (in order), find the best-matching text block
+    by IoU. Matched blocks are emitted in layout order; unmatched blocks
+    are appended at the end sorted by y-coordinate.
+
+    Args:
+        blocks: Text blocks from PyMuPDF extraction.
+        layout_blocks: Layout blocks from Docling/Surya (in reading order).
+        iou_threshold: Minimum IoU to consider a match.
+
+    Returns:
+        Reordered text blocks.
+    """
+    if not layout_blocks or not blocks:
+        return blocks
+
+    remaining = list(blocks)
+    ordered: list[TextBlock] = []
+
+    for lb in layout_blocks:
+        best_tb: TextBlock | None = None
+        best_iou = 0.0
+        best_idx = -1
+
+        for i, tb in enumerate(remaining):
+            iou = tb.bbox.iou(lb.bbox)
+            if iou > best_iou and iou >= iou_threshold:
+                best_iou = iou
+                best_tb = tb
+                best_idx = i
+
+        if best_tb is not None:
+            ordered.append(best_tb)
+            remaining.pop(best_idx)
+
+    # Append unmatched blocks sorted by y-coordinate
+    remaining.sort(key=lambda b: (b.bbox.y0, b.bbox.x0))
+    ordered.extend(remaining)
+
+    return ordered

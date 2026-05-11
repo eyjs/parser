@@ -71,6 +71,11 @@ DEFAULT_RULES: list[RoutingRule] = [
     RoutingRule(BlockType.ITEM, 0.0, 1.01, "markdown", priority=5),
     RoutingRule(BlockType.FOOTNOTE, 0.0, 1.01, "markdown", priority=5),
     RoutingRule(BlockType.CAPTION, 0.0, 1.01, "markdown", priority=5),
+    RoutingRule(BlockType.LIST, 0.0, 1.01, "markdown", priority=5),
+    # Noise labels -- defensive: should already be filtered upstream
+    RoutingRule(BlockType.PAGE_FOOTER, 0.0, 1.01, "noise_filter", priority=10),
+    RoutingRule(BlockType.PAGE_NUMBER, 0.0, 1.01, "noise_filter", priority=10),
+    RoutingRule(BlockType.PAGE_HEADER, 0.0, 1.01, "noise_filter", priority=10),
     # TEXT -- low confidence -> fallback
     RoutingRule(BlockType.TEXT, 0.0, 0.5, "fallback", priority=5),
     # UNKNOWN -- always fallback

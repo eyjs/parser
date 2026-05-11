@@ -111,23 +111,50 @@ def check_preprocessing() -> bool:
 def build_layout_detector(config: ParserConfig):
     """Construct the layout detector indicated by ``config``.
 
+    Fallback chain depends on ``config.layout_detection_backend``:
+      - ``"docling"``: Docling only → Null
+      - ``"surya"``:   Surya only → Null  (default, backward-compatible)
+      - ``"auto"``:    Docling → Surya → Null
+
     Returns a :class:`NullLayoutDetector` when layout detection is
-    disabled or Surya is not importable. Adapters are imported lazily
-    so the cold path stays fast.
+    disabled or no backend is importable.
     """
-    from docforge.adapters.layout import NullLayoutDetector, SuryaLayoutDetector
+    from docforge.adapters.layout import (
+        DoclingLayoutDetector,
+        NullLayoutDetector,
+        SuryaLayoutDetector,
+    )
 
     if not config.layout_detection_enabled:
         return NullLayoutDetector()
-    try:
-        detector = SuryaLayoutDetector()
-        if detector.is_available():
-            return detector
-        logger.info("Surya not installed — falling back to NullLayoutDetector")
-        return NullLayoutDetector()
-    except Exception:  # pragma: no cover - defensive
-        logger.warning("Layout detector init failed", exc_info=True)
-        return NullLayoutDetector()
+
+    backend = config.layout_detection_backend
+
+    if backend in ("docling", "auto"):
+        try:
+            detector = DoclingLayoutDetector()
+            if detector.is_available():
+                logger.info("Layout backend: Docling (DocLayNet RT-DETR)")
+                return detector
+            logger.info("Docling not available")
+        except Exception:
+            logger.info("Docling init failed", exc_info=True)
+        if backend == "docling":
+            logger.info("Docling requested but unavailable — falling back to Null")
+            return NullLayoutDetector()
+
+    if backend in ("surya", "auto"):
+        try:
+            detector = SuryaLayoutDetector()
+            if detector.is_available():
+                logger.info("Layout backend: Surya")
+                return detector
+            logger.info("Surya not installed")
+        except Exception:
+            logger.info("Surya init failed", exc_info=True)
+
+    logger.info("No layout backend available — using NullLayoutDetector")
+    return NullLayoutDetector()
 
 
 def build_llm_engine(config: ParserConfig) -> "VisionLLMEngine | None":

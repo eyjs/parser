@@ -261,15 +261,30 @@ class PageProcessor:
                                 blocks.append(ob)
                                 page_ocr_used = True
 
-            clean_blocks, page_noise = noise_detector.filter_noise_from_blocks(
-                blocks, height, self._patterns, config
+            layout_blocks = self._maybe_detect_layout(
+                reader, doc, page_idx, page_type=effective_type,
+                page_strategy=page_strategy,
             )
 
-            col_layout = column_detector.detect_columns(clean_blocks, width)
-            if col_layout.num_columns > 1:
-                clean_blocks = column_detector.reorder_blocks_by_columns(
-                    clean_blocks, col_layout,
+            if layout_blocks and config.layout_reading_order_enabled:
+                clean_blocks, page_noise = noise_detector.filter_noise_with_layout(
+                    blocks, layout_blocks, height, self._patterns, config,
                 )
+            else:
+                clean_blocks, page_noise = noise_detector.filter_noise_from_blocks(
+                    blocks, height, self._patterns, config,
+                )
+
+            if layout_blocks and config.layout_reading_order_enabled:
+                clean_blocks = column_detector.reorder_blocks_by_layout(
+                    clean_blocks, layout_blocks,
+                )
+            else:
+                col_layout = column_detector.detect_columns(clean_blocks, width)
+                if col_layout.num_columns > 1:
+                    clean_blocks = column_detector.reorder_blocks_by_columns(
+                        clean_blocks, col_layout,
+                    )
 
             clean_blocks = split_heading_body(
                 clean_blocks, morpheme_analyzer=self._morpheme_analyzer,
@@ -277,12 +292,6 @@ class PageProcessor:
 
             merged_blocks = self._classify_and_merge(clean_blocks, effective_type)
 
-            # Phase 2: Alternative heading detection for OCR pages
-            # where font_size=0.0 makes text_structurer blind.
-            layout_blocks = self._maybe_detect_layout(
-                reader, doc, page_idx, page_type=effective_type,
-                page_strategy=page_strategy,
-            )
             if page_ocr_used:
                 merged_blocks = self._apply_heading_detector(
                     merged_blocks, layout_blocks, height,
@@ -499,7 +508,11 @@ class PageProcessor:
             and page_strategy.estimated_complexity == "table_heavy"
         )
 
-        if page_type not in (PageType.SCANNED, PageType.MIXED) and not is_table_heavy:
+        if (
+            page_type not in (PageType.SCANNED, PageType.MIXED)
+            and not is_table_heavy
+            and not config.layout_detection_all_pages
+        ):
             _logger.debug(
                 "Skipping layout detection for %s page (page_idx=%d)",
                 page_type.value,

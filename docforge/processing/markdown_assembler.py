@@ -237,6 +237,13 @@ def assemble_page(
             if not text:
                 continue
 
+            if elem.block_type in (
+                BlockType.PAGE_FOOTER,
+                BlockType.PAGE_NUMBER,
+                BlockType.PAGE_HEADER,
+            ):
+                continue
+
             if elem.block_type == BlockType.HEADING and elem.heading_level > 0:
                 md_level = min(elem.heading_level, 6)
                 parts.append("")
@@ -246,6 +253,8 @@ def assemble_page(
                 parts.append(f"\n{text}")
             elif elem.block_type in (BlockType.SUBCLAUSE, BlockType.ITEM):
                 parts.append(f"  {text}")
+            elif elem.block_type == BlockType.LIST:
+                parts.append(f"- {text}")
             else:
                 text = _convert_unicode_bullets(text)
                 parts.append(text)

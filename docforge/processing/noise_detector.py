@@ -9,7 +9,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
-from docforge.domain.models import NoiseStats, TextBlock
+from docforge.domain.models import LayoutBlock, NoiseStats, TextBlock
 from docforge.domain.value_objects import BBox
 from docforge.infrastructure.config import ParserConfig
 
@@ -265,6 +265,82 @@ def filter_noise_from_blocks(
         elif noise_type == "watermark":
             watermarks += 1
         # "empty" blocks are silently dropped
+
+    return clean, NoiseStats(
+        headers=headers,
+        footers=footers,
+        page_numbers=page_numbers,
+        watermarks=watermarks,
+    )
+
+
+_NOISE_LABELS: frozenset[str] = frozenset({
+    "Footer", "Page-Footer", "Page-Number", "Page-Header", "Header",
+})
+
+_LABEL_TO_NOISE_TYPE: dict[str, str] = {
+    "Footer": "footer",
+    "Page-Footer": "footer",
+    "Page-Number": "page_number",
+    "Page-Header": "header",
+    "Header": "header",
+}
+
+
+def filter_noise_with_layout(
+    blocks: list[TextBlock],
+    layout_blocks: list[LayoutBlock],
+    page_height: float,
+    patterns: LearnedPatterns,
+    config: ParserConfig,
+    iou_threshold: float = 0.3,
+) -> tuple[list[TextBlock], NoiseStats]:
+    """Filter noise using ML layout labels with heuristic fallback.
+
+    LayoutBlocks labelled Footer/Page-Number/Page-Header are matched to
+    TextBlocks by IoU. Matched blocks are classified as noise immediately.
+    Remaining blocks fall through to ``classify_noise()`` heuristics.
+    """
+    if not layout_blocks:
+        return filter_noise_from_blocks(blocks, page_height, patterns, config)
+
+    noise_lbs = [lb for lb in layout_blocks if lb.label in _NOISE_LABELS]
+
+    if not noise_lbs:
+        return filter_noise_from_blocks(blocks, page_height, patterns, config)
+
+    ml_noise_indices: dict[int, str] = {}
+    for i, tb in enumerate(blocks):
+        for lb in noise_lbs:
+            if tb.bbox.iou(lb.bbox) >= iou_threshold:
+                ml_noise_indices[i] = _LABEL_TO_NOISE_TYPE.get(lb.label, "footer")
+                break
+
+    clean: list[TextBlock] = []
+    headers = 0
+    footers = 0
+    page_numbers = 0
+    watermarks = 0
+
+    for i, block in enumerate(blocks):
+        if i in ml_noise_indices:
+            noise_type = ml_noise_indices[i]
+        else:
+            noise_type = classify_noise(
+                block.text, block.bbox.center_y,
+                page_height, patterns, config,
+            )
+
+        if noise_type is None:
+            clean.append(block)
+        elif noise_type == "page_number":
+            page_numbers += 1
+        elif noise_type == "header":
+            headers += 1
+        elif noise_type == "footer":
+            footers += 1
+        elif noise_type == "watermark":
+            watermarks += 1
 
     return clean, NoiseStats(
         headers=headers,

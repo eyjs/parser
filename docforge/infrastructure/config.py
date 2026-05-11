@@ -169,6 +169,13 @@ class ParserConfig:
     layout_detection_enabled: bool = True
     layout_iou_threshold: float = 0.3
 
+    # Docling/DocLayNet layout analysis backend.
+    # "surya" (default) | "docling" | "auto" (Docling→Surya fallback)
+    layout_detection_backend: str = "surya"
+    layout_detection_all_pages: bool = False
+    layout_reading_order_enabled: bool = True
+    layout_table_structure_enabled: bool = True
+
     # P0-6: Adaptive tolerance for borderless table detection.
     # When True, snap_tolerance and join_tolerance are scaled by DPI ratio.
     adaptive_tolerance_enabled: bool = True

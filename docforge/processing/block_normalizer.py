@@ -21,19 +21,32 @@ from docforge.domain.value_objects import BBox
 logger = logging.getLogger(__name__)
 
 
-# ---- Surya label -> BlockType mapping ----
+# ---- Layout label -> BlockType mapping ----
+# Covers both Surya and Docling canonical label vocabularies.
 
-SURYA_LABEL_MAP: dict[str, BlockType] = {
+LAYOUT_LABEL_MAP: dict[str, BlockType] = {
     "Table": BlockType.TABLE,
     "Figure": BlockType.FIGURE,
     "Picture": BlockType.FIGURE,
     "Title": BlockType.HEADING,
     "Section-header": BlockType.HEADING,
+    "Section-Header": BlockType.HEADING,
+    "SectionHeader": BlockType.HEADING,
     "Caption": BlockType.CAPTION,
     "Text": BlockType.TEXT,
     "Formula": BlockType.TEXT,
     "Equation": BlockType.TEXT,
+    "List": BlockType.LIST,
+    "List-item": BlockType.LIST,
+    "Footer": BlockType.PAGE_FOOTER,
+    "Page-Footer": BlockType.PAGE_FOOTER,
+    "Page-Header": BlockType.PAGE_HEADER,
+    "Header": BlockType.PAGE_HEADER,
+    "Page-Number": BlockType.PAGE_NUMBER,
+    "Footnote": BlockType.FOOTNOTE,
 }
+
+SURYA_LABEL_MAP = LAYOUT_LABEL_MAP
 
 
 def _make_block_id(bbox: BBox, page_num: int) -> str:
@@ -44,7 +57,7 @@ def _make_block_id(bbox: BBox, page_num: int) -> str:
 
 def normalize_layout_block(lb: LayoutBlock) -> NormalizedBlock:
     """Convert a single ``LayoutBlock`` into ``NormalizedBlock``."""
-    block_type = SURYA_LABEL_MAP.get(lb.label, BlockType.UNKNOWN)
+    block_type = LAYOUT_LABEL_MAP.get(lb.label, BlockType.UNKNOWN)
     return NormalizedBlock(
         block_id=_make_block_id(lb.bbox, lb.page_num),
         bbox=lb.bbox,
@@ -139,6 +152,7 @@ def merge_normalized(
 
 
 __all__ = [
+    "LAYOUT_LABEL_MAP",
     "SURYA_LABEL_MAP",
     "normalize_layout_block",
     "normalize_text_block",

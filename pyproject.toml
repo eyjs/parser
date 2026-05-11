@@ -33,6 +33,10 @@ cloud_vlm = [
     "openai>=1.0.0",
     "anthropic>=0.20.0",
 ]
+docling = [
+    "docling>=2.0.0",
+    "docling-core>=2.0.0",
+]
 build = [
     "pyinstaller>=6.0.0",
 ]

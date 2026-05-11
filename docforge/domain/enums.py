@@ -40,11 +40,16 @@ class BlockType(str, Enum):
     ITEM = "item"
     TEXT = "text"
     FOOTNOTE = "footnote"
+    LIST = "list"
     # --- Phase 2: confidence-based routing ---
     TABLE = "table"
     FIGURE = "figure"
     CHART = "chart"
     CAPTION = "caption"
+    # --- Docling/DocLayNet noise labels ---
+    PAGE_HEADER = "page_header"
+    PAGE_FOOTER = "page_footer"
+    PAGE_NUMBER = "page_number"
     UNKNOWN = "unknown"
 
 
