@@ -18,9 +18,14 @@ from docforge.infrastructure.config import ParserConfig
 _PAGE_NUM_PATTERNS = [
     re.compile(r"^\s*-?\s*\d{1,4}\s*-?\s*$"),
     re.compile(r"^\s*page\s*\d+\s*$", re.IGNORECASE),
+    re.compile(r"^\s*page\s*\d+\s*of\s*\d+\s*$", re.IGNORECASE),
     re.compile(r"^\s*\d+\s*/\s*\d+\s*$"),
     re.compile(r"^\s*제?\s*\d+\s*쪽\s*$"),
 ]
+
+_STATUS_NOISE_PATTERN = re.compile(
+    r"^\s*상태\s*OK\s*$", re.IGNORECASE,
+)
 
 
 @dataclass
@@ -124,6 +129,9 @@ def classify_noise(
         return "empty"
 
     if is_page_number(stripped):
+        return "page_number"
+
+    if _STATUS_NOISE_PATTERN.match(stripped):
         return "page_number"
 
     normalized = _normalize_for_matching(stripped)
