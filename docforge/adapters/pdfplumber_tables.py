@@ -43,6 +43,21 @@ _MIN_WORD_GRID_COLS = 3
 _WORD_GRID_Y_TOLERANCE = 3.0
 # Minimum gap ratio (of page width) for column boundary detection
 _WORD_GRID_MIN_GAP_RATIO = 0.02
+# Y-padding above first header and below last data row for itinerary section
+_ITINERARY_Y_PAD = 5.0
+
+_ITINERARY_HEADER_RE = re.compile(
+    r"(?:도시|공항|일자|시각|터미널|클래스|비행시간|상태"
+    r"|CITY|AIRPORT|DATE|TIME|CLASS|STATUS|FLIGHT)",
+    re.IGNORECASE,
+)
+_MIN_HEADER_MATCHES = 3
+
+_ITINERARY_END_RE = re.compile(
+    r"(?:항공권\s*정보|Ticket\s*Information|항공사\s*공지|Airline\s*Notice"
+    r"|드리는\s*말씀|Remarks|제한사항|Restriction)",
+    re.IGNORECASE,
+)
 
 
 def _has_airline_pattern(words: list[dict]) -> bool:
@@ -50,6 +65,45 @@ def _has_airline_pattern(words: list[dict]) -> bool:
     text = " ".join(w.get("text", "") for w in words)
     matches = _AIRLINE_PATTERN_RE.findall(text)
     return len(matches) >= _MIN_AIRLINE_MATCHES
+
+
+def _find_itinerary_rows(
+    rows: list[list[dict]],
+) -> list[list[dict]]:
+    """Find rows belonging to the itinerary section.
+
+    Identifies header rows (containing >=3 column-header keywords like
+    도시/공항, 일자/시각, etc.), then collects all rows between
+    the first header and the last data row within the itinerary y-range.
+    """
+    header_indices: list[int] = []
+    for i, row in enumerate(rows):
+        row_text = " ".join(w.get("text", "") for w in row)
+        if len(_ITINERARY_HEADER_RE.findall(row_text)) >= _MIN_HEADER_MATCHES:
+            header_indices.append(i)
+
+    if not header_indices:
+        return rows
+
+    first_header_y = min(w["top"] for w in rows[header_indices[0]])
+    last_header_idx = header_indices[-1]
+
+    y_min = first_header_y - _ITINERARY_Y_PAD
+
+    end_idx = len(rows)
+    for i in range(last_header_idx + 1, len(rows)):
+        row_text = " ".join(w.get("text", "") for w in rows[i])
+        if _ITINERARY_END_RE.search(row_text):
+            end_idx = i
+            break
+
+    itinerary_rows: list[list[dict]] = []
+    for row in rows[:end_idx]:
+        row_y = min(w["top"] for w in row)
+        if row_y >= y_min:
+            itinerary_rows.append(row)
+
+    return itinerary_rows if len(itinerary_rows) >= 2 else rows
 
 
 def _group_words_by_row(
@@ -90,42 +144,48 @@ def _detect_column_boundaries(
     page_width: float,
     min_gap_ratio: float = _WORD_GRID_MIN_GAP_RATIO,
 ) -> list[float]:
-    """Detect column boundary x-coordinates from word gaps.
+    """Detect column boundary x-coordinates from per-row gap clustering.
 
-    Analyzes gaps between consecutive words across all rows to find
-    consistent column separators. Returns sorted list of gap midpoints
-    that serve as column dividers.
+    For each row with >=2 words, finds gaps between consecutive words.
+    Gap midpoints are collected, sorted, and clustered by proximity (15pt).
+    Clusters appearing in >=20% of multi-word rows indicate column boundaries.
     """
     min_gap = page_width * min_gap_ratio
+    cluster_tolerance = 25.0
 
-    # Collect all word x-ranges
-    all_ranges: list[tuple[float, float]] = []
-    for row in rows:
-        for word in row:
-            all_ranges.append((word["x0"], word["x1"]))
-
-    if not all_ranges:
+    multi_word_rows = [r for r in rows if len(r) >= 2]
+    if not multi_word_rows:
         return []
 
-    # Sort by x0 and merge overlapping ranges
-    all_ranges.sort(key=lambda r: r[0])
-    merged: list[tuple[float, float]] = [all_ranges[0]]
-    for x0, x1 in all_ranges[1:]:
-        if x0 <= merged[-1][1] + 2.0:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], x1))
+    all_midpoints: list[float] = []
+    for row in multi_word_rows:
+        sorted_words = sorted(row, key=lambda w: w["x0"])
+        row_mids: set[float] = set()
+        for i in range(1, len(sorted_words)):
+            gap_start = sorted_words[i - 1]["x1"]
+            gap_end = sorted_words[i]["x0"]
+            if gap_end - gap_start >= min_gap:
+                row_mids.add((gap_start + gap_end) / 2)
+        all_midpoints.extend(row_mids)
+
+    if not all_midpoints:
+        return []
+
+    all_midpoints.sort()
+    clusters: list[list[float]] = [[all_midpoints[0]]]
+    for mp in all_midpoints[1:]:
+        if mp - clusters[-1][-1] <= cluster_tolerance:
+            clusters[-1].append(mp)
         else:
-            merged.append((x0, x1))
+            clusters.append([mp])
 
-    # Find gaps between merged ranges
+    threshold = max(len(multi_word_rows) * 0.2, 2)
     boundaries: list[float] = []
-    for i in range(1, len(merged)):
-        gap_start = merged[i - 1][1]
-        gap_end = merged[i][0]
-        gap_width = gap_end - gap_start
-        if gap_width >= min_gap:
-            boundaries.append((gap_start + gap_end) / 2)
+    for cluster in clusters:
+        if len(cluster) >= threshold:
+            boundaries.append(sum(cluster) / len(cluster))
 
-    return boundaries
+    return sorted(boundaries)
 
 
 def _assign_words_to_columns(
@@ -521,8 +581,7 @@ class PdfplumberTableExtractor:
         """
         try:
             words = page.extract_words(
-                keep_blank_chars=True,
-                x_tolerance=3,
+                x_tolerance=1,
                 y_tolerance=3,
             )
         except Exception:
@@ -532,23 +591,25 @@ class PdfplumberTableExtractor:
         if not words or not _has_airline_pattern(words):
             return []
 
-        rows = _group_words_by_row(words, _WORD_GRID_Y_TOLERANCE)
-        if len(rows) < 2:
+        all_rows = _group_words_by_row(words, _WORD_GRID_Y_TOLERANCE)
+        if len(all_rows) < 2:
             return []
 
-        col_boundaries = _detect_column_boundaries(rows, page_width)
+        itinerary_rows = _find_itinerary_rows(all_rows)
+        col_boundaries = _detect_column_boundaries(itinerary_rows, page_width)
         num_cols = len(col_boundaries) + 1
 
         if num_cols < _MIN_WORD_GRID_COLS:
             return []
 
-        # Build grid
+        # Build grid from itinerary rows only
         grid: list[list[str]] = []
-        for row_words in rows:
+        itinerary_words: list[dict] = []
+        for row_words in itinerary_rows:
             row_cells = _assign_words_to_columns(row_words, col_boundaries)
-            # Skip completely empty rows
             if any(cell.strip() for cell in row_cells):
                 grid.append(row_cells)
+                itinerary_words.extend(row_words)
 
         if len(grid) < 2:
             return []
@@ -563,11 +624,12 @@ class PdfplumberTableExtractor:
                     col=c_idx,
                 ))
 
-        # Compute bounding box from all words
-        all_x0 = min(w["x0"] for w in words)
-        all_y0 = min(w["top"] for w in words)
-        all_x1 = max(w["x1"] for w in words)
-        all_y1 = max(w["bottom"] for w in words)
+        # Compute bounding box from itinerary words
+        bbox_words = itinerary_words if itinerary_words else words
+        all_x0 = min(w["x0"] for w in bbox_words)
+        all_y0 = min(w["top"] for w in bbox_words)
+        all_x1 = max(w["x1"] for w in bbox_words)
+        all_y1 = max(w["bottom"] for w in bbox_words)
 
         table = Table(
             cells=tuple(cells),
