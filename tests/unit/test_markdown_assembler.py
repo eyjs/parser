@@ -769,6 +769,38 @@ class TestRepairTextFunction:
         result = _repair_text(garbled)
         assert "보험계약" in result
 
+    def test_mixed_cp1252_latin1_byte_repair(self) -> None:
+        """Test byte-level repair for text with cp1252-specific AND latin1 chars.
+
+        전자항공권 contains byte 0x90 which is undefined in cp1252.
+        A lenient decoder maps it to U+0090 (latin1) while surrounding
+        bytes use cp1252 chars (like „ U+201E for 0x84).
+        """
+        raw_bytes = "전자항공권".encode("utf-8")
+        garbled_chars = []
+        for b in raw_bytes:
+            try:
+                garbled_chars.append(bytes([b]).decode("cp1252"))
+            except UnicodeDecodeError:
+                garbled_chars.append(bytes([b]).decode("latin1"))
+        garbled = "".join(garbled_chars)
+        result = _repair_text(garbled)
+        assert result == "전자항공권"
+
+    def test_garbled_with_space_replacing_nbsp(self) -> None:
+        """NBSP in garbled text often gets normalized to space."""
+        raw_bytes = "전자".encode("utf-8")  # \xEC\xA0\x84\xEC\x9E\x90
+        garbled = raw_bytes.decode("latin1")
+        garbled = garbled.replace("\xa0", " ")
+        result = _repair_text(garbled)
+        assert result == "전자"
+
+    def test_unrepairable_garbled_stripped(self) -> None:
+        """Garbled text with no Korean and mojibake hints should be stripped."""
+        garbled = "Ã«Â³Â¸Ã­Â"
+        result = _repair_text(garbled)
+        assert result == ""
+
     def test_status_ok_noise_removed(self) -> None:
         assert _repair_text("상태 OK") == ""
         assert _repair_text("  상태  OK  ") == ""

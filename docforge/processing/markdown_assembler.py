@@ -35,6 +35,59 @@ _ENCODING_PAIRS: list[tuple[str, str]] = [
 ]
 
 
+def _build_cp1252_map() -> dict[int, int]:
+    """Map cp1252-specific Unicode code points back to their byte values."""
+    result: dict[int, int] = {}
+    for b in range(0x80, 0xA0):
+        try:
+            cp = ord(bytes([b]).decode("cp1252"))
+            if cp != b:
+                result[cp] = b
+        except UnicodeDecodeError:
+            pass
+    return result
+
+
+_CP1252_TO_BYTE = _build_cp1252_map()
+
+
+def _try_byte_repair(text: str) -> str | None:
+    """Byte-level repair for mixed latin1/cp1252 garbled text.
+
+    Handles text where some bytes were decoded as latin1 control chars
+    (U+0080-U+009F) and others as cp1252-specific chars (U+201E, etc.).
+    Also tries space-to-NBSP substitution since NBSP often gets
+    normalized to a regular space during text extraction.
+    """
+    variants = [text]
+    if " " in text:
+        variants.append(text.replace(" ", "\xa0"))
+
+    for variant in variants:
+        raw = bytearray()
+        for ch in variant:
+            cp = ord(ch)
+            if cp < 256:
+                raw.append(cp)
+            elif cp in _CP1252_TO_BYTE:
+                raw.append(_CP1252_TO_BYTE[cp])
+            else:
+                break
+        else:
+            try:
+                candidate = bytes(raw).decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                continue
+            if (
+                len(candidate) >= len(text) * 0.2
+                and _KOREAN_RE.search(candidate)
+                and not _MOJIBAKE_HINT.search(candidate)
+            ):
+                return candidate.strip()
+
+    return None
+
+
 def _repair_text(text: str) -> str:
     """Strip CID references, fix mojibake, and remove noise from text."""
     text = _CID_PATTERN.sub("", text)
@@ -54,6 +107,11 @@ def _repair_text(text: str) -> str:
                 and not _MOJIBAKE_HINT.search(candidate)
             ):
                 return candidate.strip()
+        repaired = _try_byte_repair(text)
+        if repaired is not None:
+            return repaired
+        if not _KOREAN_RE.search(text):
+            return ""
     return text
 
 
