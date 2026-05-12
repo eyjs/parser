@@ -437,6 +437,17 @@ class PdfplumberTableExtractor:
 
             # Check 6: Wide sparse table (many cols, few rows) — layout artifact
             if table.cols >= 6 and table.rows <= 3 and area_ratio >= 0.25:
+                if table.cells:
+                    cell_texts = [c.text.strip() for c in table.cells]
+                    non_empty = [t for t in cell_texts if t]
+                    fill_rate = len(non_empty) / max(len(cell_texts), 1)
+                    avg_len = (
+                        sum(len(t) for t in non_empty) / max(len(non_empty), 1)
+                        if non_empty else 0
+                    )
+                    if fill_rate >= 0.5 and avg_len < 40:
+                        filtered.append(table)
+                        continue
                 logger.info(
                     "Filtered wide sparse table: cols=%d, rows=%d, "
                     "%.0f%% page area",

@@ -23,8 +23,8 @@ from docforge.infrastructure.metadata import generate_front_matter
 
 
 _LEADER_DOTS_ONLY_RE = re.compile(r"^[\s·…]+$")
-_UNICODE_BULLET_RE = re.compile(r"^[●•][​\s]*")
-_UNICODE_SUB_BULLET_RE = re.compile(r"^[○◦][​\s]*")
+_UNICODE_BULLET_RE = re.compile(r"^[●•][​\s]*", re.MULTILINE)
+_UNICODE_SUB_BULLET_RE = re.compile(r"^[○◦][​\s]*", re.MULTILINE)
 _CID_PATTERN = re.compile(r"\(cid:\s*\d+\s*\)")
 _STATUS_NOISE_RE = re.compile(r"^\s*상태\s*OK\s*$", re.IGNORECASE)
 _MOJIBAKE_HINT = re.compile(r"[\xc0-\xff]")
@@ -225,10 +225,11 @@ def _is_layout_table(table: Table) -> bool:
     long_cells = sum(1 for length in cell_lengths if length > 80)
 
     if table.cols >= 5 and table.rows <= 3:
-        if table.cols >= 7:
-            return True
         non_empty = len(cell_lengths)
         total = table.rows * table.cols
+        fill_rate = non_empty / max(total, 1)
+        if fill_rate >= 0.5 and long_cells == 0:
+            return False
         if non_empty < total * 0.5 or long_cells >= 1:
             return True
 
@@ -508,6 +509,7 @@ def _classify_image_text(
 def _image_to_markdown(image, image_dir: str | None) -> str:
     """Render a ``ParsedImage`` as standard markdown image syntax."""
     caption = (image.caption or image.alt_text or "").strip()
+    caption = _repair_text(caption)
     alt_text = caption or f"image-{image.page_num}-{image.block_id}"
 
     if image_dir and image.data:

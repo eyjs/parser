@@ -190,3 +190,47 @@ class TestAdaptiveTolerance:
         # 72/300 * 3 = 0.72 -> round to 1 -> clamp to 3
         assert snap == 3
         assert join == 3
+
+
+class TestCheck6DenseTablePreserved:
+    """Check 6 should preserve dense wide tables with real data."""
+
+    def setup_method(self) -> None:
+        self.extractor = PdfplumberTableExtractor(ParserConfig())
+        self.page_width = 600.0
+        self.page_height = 800.0
+
+    def test_keeps_dense_wide_flight_table(self) -> None:
+        """A 7-col, 2-row table with high fill rate and short cells should be kept."""
+        cells: list[TableCell] = []
+        flight_data = [
+            ["OZ 545", "ASIANA", "ICN", "14JUN 10:45", "T2", "ECONOMY/K", "13:00"],
+            ["OZ 546", "ASIANA", "PRG", "18JUN 18:50", "T1", "ECONOMY/K", "11:20"],
+        ]
+        for r, row in enumerate(flight_data):
+            for c, text in enumerate(row):
+                cells.append(TableCell(text=text, row=r, col=c))
+        table = Table(
+            cells=tuple(cells), rows=2, cols=7,
+            bbox=BBox(x0=30, y0=200, x1=560, y1=320),
+        )
+        result = self.extractor._filter_layout_tables(
+            [table], self.page_width, self.page_height,
+        )
+        assert len(result) == 1
+
+    def test_still_filters_sparse_wide_table(self) -> None:
+        """A 7-col, 2-row table with mostly empty cells should still be filtered."""
+        cells: list[TableCell] = []
+        for r in range(2):
+            for c in range(7):
+                text = "KE" if (r == 0 and c == 0) else ""
+                cells.append(TableCell(text=text, row=r, col=c))
+        table = Table(
+            cells=tuple(cells), rows=2, cols=7,
+            bbox=BBox(x0=10, y0=10, x1=560, y1=400),
+        )
+        result = self.extractor._filter_layout_tables(
+            [table], self.page_width, self.page_height,
+        )
+        assert len(result) == 0

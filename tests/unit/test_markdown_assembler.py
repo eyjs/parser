@@ -730,9 +730,13 @@ class TestWideLayoutTableDetection:
         )
         assert _is_layout_table(table)
 
-    def test_7col_table_is_layout(self) -> None:
+    def test_7col_table_with_long_cells_is_layout(self) -> None:
         cells = tuple(
-            TableCell(text=f"col{c}", row=0, col=c) for c in range(7)
+            TableCell(
+                text="This is a rather long paragraph cell text that exceeds the eighty character threshold for layout detection purposes here.",
+                row=0, col=c,
+            )
+            for c in range(7)
         )
         table = Table(
             cells=cells, rows=1, cols=7,
@@ -868,3 +872,102 @@ class TestTextBlockRepairInAssembly:
         )
         md = assemble_page(page, 10.0, config)
         assert "보험계약" in md
+
+
+class TestUnicodeBulletConversion:
+    """Test that unicode bullets are converted in multi-line blocks."""
+
+    def test_multiline_bullets_all_converted(self) -> None:
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(
+                _make_block("●첫 번째 항목\n●두 번째 항목\n●세 번째 항목", y0=100.0),
+            ),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert md.count("- ") >= 3
+        assert "●" not in md
+
+    def test_sub_bullets_multiline_all_converted(self) -> None:
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(
+                _make_block("○하위 항목 1\n○하위 항목 2", y0=100.0),
+            ),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert md.count("  - ") >= 2
+        assert "○" not in md
+
+
+class TestImageCaptionMojibakeRepair:
+    """Test that image captions with mojibake are repaired."""
+
+    def test_garbled_caption_repaired(self) -> None:
+        original = "전자항공권"
+        garbled = original.encode("utf-8").decode("latin1")
+        config = ParserConfig(image_output_dir="/uploads/test")
+        img = _make_image(caption=garbled)
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(img,),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert "ì" not in md
+        assert "전자항공권" in md or "image-1-" in md
+
+    def test_unrepairable_caption_uses_generic_alt(self) -> None:
+        config = ParserConfig(image_output_dir="/uploads/test")
+        img = _make_image(caption="Ã«Â³Â¸Ã­Â")
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(img,),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert "image-1-abc123" in md
+
+
+class TestDenseFlightTableNotLayout:
+    """Test that dense wide tables (e.g. flight itinerary) are NOT layout."""
+
+    def test_dense_7col_flight_table_not_layout(self) -> None:
+        row0 = [
+            ("OZ 545", 0), ("ASIANA", 1), ("ICN", 2),
+            ("14JUN 10:45", 3), ("T2", 4), ("ECONOMY/K", 5), ("13:00", 6),
+        ]
+        row1 = [
+            ("OZ 546", 0), ("ASIANA", 1), ("PRG", 2),
+            ("18JUN 18:50", 3), ("T1", 4), ("ECONOMY/K", 5), ("11:20", 6),
+        ]
+        cells = tuple(
+            TableCell(text=t, row=0, col=c) for t, c in row0
+        ) + tuple(
+            TableCell(text=t, row=1, col=c) for t, c in row1
+        )
+        table = Table(
+            cells=cells, rows=2, cols=7,
+            bbox=BBox(x0=30, y0=200, x1=560, y1=320),
+        )
+        assert not _is_layout_table(table)
