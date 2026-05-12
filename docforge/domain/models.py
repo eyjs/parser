@@ -54,6 +54,7 @@ class Table:
     bbox: BBox
     confidence: float = 1.0
     needs_review: bool = False
+    source: str = ""  # "word_grid" for Strategy 4 reconstructed tables
 
 
 @dataclass(frozen=True)

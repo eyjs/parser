@@ -7,6 +7,7 @@ multiple fallback strategies.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,139 @@ from docforge.domain.value_objects import BBox
 from docforge.infrastructure.config import ParserConfig
 
 logger = logging.getLogger(__name__)
+
+# --- Strategy 4: Word-grid reconstruction for borderless tables ---
+
+_AIRLINE_PATTERN_RE = re.compile(
+    r"(?:"
+    r"[A-Z]{2}\s*\d{2,4}"            # flight number: OZ 545, KE 123
+    r"|TERMINAL"
+    r"|ECONOMY|BUSINESS|FIRST"
+    r"|BOARDING\s*PASS"
+    r"|GATE"
+    r"|(?:SEAT|좌석)"
+    r"|(?:ICN|GMP|PUS|CJU|NRT|HND|PEK|PVG|SIN|BKK|PRG|CDG|LHR|FRA|JFK|LAX)"
+    r"|(?:편명|항공편|출발|도착|탑승)"
+    r")",
+    re.IGNORECASE,
+)
+
+# Minimum number of airline-pattern matches to consider the page an eticket
+_MIN_AIRLINE_MATCHES = 3
+# Minimum columns to consider a word-grid as a table
+_MIN_WORD_GRID_COLS = 3
+# Y-tolerance for grouping words into the same row (in PDF points)
+_WORD_GRID_Y_TOLERANCE = 3.0
+# Minimum gap ratio (of page width) for column boundary detection
+_WORD_GRID_MIN_GAP_RATIO = 0.02
+
+
+def _has_airline_pattern(words: list[dict]) -> bool:
+    """Check if word list contains enough airline-related patterns."""
+    text = " ".join(w.get("text", "") for w in words)
+    matches = _AIRLINE_PATTERN_RE.findall(text)
+    return len(matches) >= _MIN_AIRLINE_MATCHES
+
+
+def _group_words_by_row(
+    words: list[dict],
+    y_tolerance: float = _WORD_GRID_Y_TOLERANCE,
+) -> list[list[dict]]:
+    """Group words into rows based on y-coordinate proximity.
+
+    Words within ``y_tolerance`` points of each other's top coordinate
+    are considered to be on the same row.
+    """
+    if not words:
+        return []
+
+    sorted_words = sorted(words, key=lambda w: (w["top"], w["x0"]))
+    rows: list[list[dict]] = []
+    current_row: list[dict] = [sorted_words[0]]
+    current_y = sorted_words[0]["top"]
+
+    for word in sorted_words[1:]:
+        if abs(word["top"] - current_y) <= y_tolerance:
+            current_row.append(word)
+        else:
+            current_row.sort(key=lambda w: w["x0"])
+            rows.append(current_row)
+            current_row = [word]
+            current_y = word["top"]
+
+    if current_row:
+        current_row.sort(key=lambda w: w["x0"])
+        rows.append(current_row)
+
+    return rows
+
+
+def _detect_column_boundaries(
+    rows: list[list[dict]],
+    page_width: float,
+    min_gap_ratio: float = _WORD_GRID_MIN_GAP_RATIO,
+) -> list[float]:
+    """Detect column boundary x-coordinates from word gaps.
+
+    Analyzes gaps between consecutive words across all rows to find
+    consistent column separators. Returns sorted list of gap midpoints
+    that serve as column dividers.
+    """
+    min_gap = page_width * min_gap_ratio
+
+    # Collect all word x-ranges
+    all_ranges: list[tuple[float, float]] = []
+    for row in rows:
+        for word in row:
+            all_ranges.append((word["x0"], word["x1"]))
+
+    if not all_ranges:
+        return []
+
+    # Sort by x0 and merge overlapping ranges
+    all_ranges.sort(key=lambda r: r[0])
+    merged: list[tuple[float, float]] = [all_ranges[0]]
+    for x0, x1 in all_ranges[1:]:
+        if x0 <= merged[-1][1] + 2.0:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], x1))
+        else:
+            merged.append((x0, x1))
+
+    # Find gaps between merged ranges
+    boundaries: list[float] = []
+    for i in range(1, len(merged)):
+        gap_start = merged[i - 1][1]
+        gap_end = merged[i][0]
+        gap_width = gap_end - gap_start
+        if gap_width >= min_gap:
+            boundaries.append((gap_start + gap_end) / 2)
+
+    return boundaries
+
+
+def _assign_words_to_columns(
+    row_words: list[dict],
+    col_boundaries: list[float],
+) -> list[str]:
+    """Assign words in a row to column slots based on column boundaries.
+
+    Returns a list of cell texts, one per column (num_columns = len(boundaries) + 1).
+    """
+    num_cols = len(col_boundaries) + 1
+    cells: list[list[str]] = [[] for _ in range(num_cols)]
+
+    for word in row_words:
+        word_center = (word["x0"] + word["x1"]) / 2
+        col_idx = 0
+        for boundary in col_boundaries:
+            if word_center > boundary:
+                col_idx += 1
+            else:
+                break
+        col_idx = min(col_idx, num_cols - 1)
+        cells[col_idx].append(word.get("text", ""))
+
+    return [" ".join(parts).strip() for parts in cells]
 
 
 class PdfplumberTableExtractor:
@@ -85,6 +219,15 @@ class PdfplumberTableExtractor:
                 page, tables, table_hint_bboxes, page_width, page_height,
             )
             tables.extend(hint_tables)
+
+        # Strategy 4: Word-grid reconstruction for borderless tables
+        # (e.g. airline e-ticket itinerary). Only runs when Strategies 1-3
+        # produced no tables and the page contains airline-related patterns.
+        if not tables:
+            word_grid_tables = self._reconstruct_word_grid(
+                page, page_width, page_height,
+            )
+            tables.extend(word_grid_tables)
 
         return tables
 
@@ -361,6 +504,87 @@ class PdfplumberTableExtractor:
 
         return new_tables
 
+    def _reconstruct_word_grid(
+        self,
+        page: pdfplumber.page.Page,
+        page_width: float,
+        page_height: float,
+    ) -> list[Table]:
+        """Strategy 4: Reconstruct a table from word-level bounding boxes.
+
+        Extracts words from the page, checks for airline e-ticket patterns,
+        groups words into rows by y-coordinate, detects column boundaries
+        from x-coordinate gaps, and builds a Table object.
+
+        Only activates when airline-related patterns are detected to avoid
+        false positives on general documents.
+        """
+        try:
+            words = page.extract_words(
+                keep_blank_chars=True,
+                x_tolerance=3,
+                y_tolerance=3,
+            )
+        except Exception:
+            logger.debug("Strategy 4: extract_words failed", exc_info=True)
+            return []
+
+        if not words or not _has_airline_pattern(words):
+            return []
+
+        rows = _group_words_by_row(words, _WORD_GRID_Y_TOLERANCE)
+        if len(rows) < 2:
+            return []
+
+        col_boundaries = _detect_column_boundaries(rows, page_width)
+        num_cols = len(col_boundaries) + 1
+
+        if num_cols < _MIN_WORD_GRID_COLS:
+            return []
+
+        # Build grid
+        grid: list[list[str]] = []
+        for row_words in rows:
+            row_cells = _assign_words_to_columns(row_words, col_boundaries)
+            # Skip completely empty rows
+            if any(cell.strip() for cell in row_cells):
+                grid.append(row_cells)
+
+        if len(grid) < 2:
+            return []
+
+        # Build Table object
+        cells: list[TableCell] = []
+        for r_idx, row in enumerate(grid):
+            for c_idx, cell_text in enumerate(row):
+                cells.append(TableCell(
+                    text=cell_text,
+                    row=r_idx,
+                    col=c_idx,
+                ))
+
+        # Compute bounding box from all words
+        all_x0 = min(w["x0"] for w in words)
+        all_y0 = min(w["top"] for w in words)
+        all_x1 = max(w["x1"] for w in words)
+        all_y1 = max(w["bottom"] for w in words)
+
+        table = Table(
+            cells=tuple(cells),
+            rows=len(grid),
+            cols=num_cols,
+            bbox=BBox(x0=all_x0, y0=all_y0, x1=all_x1, y1=all_y1),
+            source="word_grid",
+        )
+
+        logger.info(
+            "Strategy 4 (word-grid) reconstructed table: %d rows x %d cols "
+            "from bbox (%.1f,%.1f,%.1f,%.1f)",
+            len(grid), num_cols, all_x0, all_y0, all_x1, all_y1,
+        )
+
+        return [table]
+
     def _filter_layout_tables(
         self,
         tables: list[Table],
@@ -382,6 +606,11 @@ class PdfplumberTableExtractor:
 
         filtered: list[Table] = []
         for table in tables:
+            # Word-grid reconstructed tables bypass layout filtering
+            if getattr(table, "source", "") == "word_grid":
+                filtered.append(table)
+                continue
+
             bbox = table.bbox
             table_area = (bbox.x1 - bbox.x0) * (bbox.y1 - bbox.y0)
             area_ratio = table_area / page_area

@@ -115,8 +115,22 @@ def _repair_text(text: str) -> str:
     return text
 
 
+_INLINE_BULLET_RE = re.compile(r"(?<=\S)[ \t]*([●•])")
+_INLINE_SUB_BULLET_RE = re.compile(r"(?<=\S)[ \t]*([○◦])")
+
+
 def _convert_unicode_bullets(text: str) -> str:
-    """Convert Unicode bullet characters to markdown list syntax."""
+    """Convert Unicode bullet characters to markdown list syntax.
+
+    Handles both line-start bullets and mid-line bullets that occur when
+    ``line_merger`` concatenates multiple bullet items into one TextBlock.
+    Mid-line bullets are split onto their own lines first so the ``^``
+    anchored regexes can match them.
+    """
+    # Split mid-line bullets onto separate lines
+    text = _INLINE_BULLET_RE.sub(r"\n\1", text)
+    text = _INLINE_SUB_BULLET_RE.sub(r"\n\1", text)
+    # Now apply line-start bullet conversion
     text = _UNICODE_BULLET_RE.sub("- ", text)
     text = _UNICODE_SUB_BULLET_RE.sub("  - ", text)
     return text
