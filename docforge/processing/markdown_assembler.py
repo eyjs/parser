@@ -25,6 +25,34 @@ from docforge.infrastructure.metadata import generate_front_matter
 _LEADER_DOTS_ONLY_RE = re.compile(r"^[\s·…]+$")
 _UNICODE_BULLET_RE = re.compile(r"^[●•][​\s]*")
 _UNICODE_SUB_BULLET_RE = re.compile(r"^[○◦][​\s]*")
+_CID_PATTERN = re.compile(r"\(cid:\s*\d+\s*\)")
+_STATUS_NOISE_RE = re.compile(r"^\s*상태\s*OK\s*$", re.IGNORECASE)
+_MOJIBAKE_SEQUENCES = re.compile(
+    r"[Ã¢Ã£Ã¤Ã¥Ã¦Ã§Ã¨Ã©]"
+    r"|[\xc0-\xdf][\x80-\xbf]"
+    r"|[\xe0-\xef][\x80-\xbf]"
+)
+_ENCODING_PAIRS: list[tuple[str, str]] = [
+    ("latin1", "utf-8"),
+    ("cp1252", "utf-8"),
+]
+
+
+def _repair_text(text: str) -> str:
+    """Strip CID references, fix mojibake, and remove noise from text."""
+    text = _CID_PATTERN.sub("", text)
+    text = re.sub(r"  +", " ", text).strip()
+    if _STATUS_NOISE_RE.match(text):
+        return ""
+    if _MOJIBAKE_SEQUENCES.search(text):
+        for src, tgt in _ENCODING_PAIRS:
+            try:
+                candidate = text.encode(src, errors="ignore").decode(tgt, errors="ignore")
+                if not _MOJIBAKE_SEQUENCES.search(candidate) and len(candidate) >= len(text) * 0.2:
+                    return candidate.strip()
+            except (UnicodeDecodeError, UnicodeEncodeError):
+                continue
+    return text
 
 
 def _convert_unicode_bullets(text: str) -> str:
@@ -58,6 +86,119 @@ def _table_to_text(grid: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+def _clean_cell_text(text: str) -> str:
+    """Clean a single table cell: strip CID, noise, normalize whitespace."""
+    cleaned = _CID_PATTERN.sub("", text).strip()
+    if _STATUS_NOISE_RE.match(cleaned):
+        return ""
+    cleaned = re.sub(r"\s*\n\s*", " ", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"·{3,}", "", cleaned).strip()
+    return cleaned
+
+
+def _is_form_like(table: Table) -> bool:
+    """Detect tables that are actually key-value forms.
+
+    Matches 2-column tables where >= 60% of rows have a short label
+    in the left column and a value in the right column.
+    """
+    if table.cols != 2 or table.rows < 2:
+        return False
+
+    label_value_count = 0
+    for row_idx in range(table.rows):
+        row_cells = [c for c in table.cells if c.row == row_idx]
+        if len(row_cells) != 2:
+            continue
+        left, right = sorted(row_cells, key=lambda c: c.col)
+        left_text = left.text.strip()
+        right_text = right.text.strip()
+        if len(left_text) < 2 or len(right_text) == 0:
+            continue
+        if len(left_text) > 30:
+            continue
+        if left_text.endswith(":") or left_text.endswith("："):
+            label_value_count += 1
+        elif len(left_text) <= 15 and len(right_text) > len(left_text):
+            label_value_count += 1
+
+    return label_value_count >= table.rows * 0.6
+
+
+def _form_to_text(table: Table) -> str:
+    """Render a form-like table as key: value lines."""
+    lines: list[str] = []
+    for row_idx in range(table.rows):
+        row_cells = [c for c in table.cells if c.row == row_idx]
+        if len(row_cells) != 2:
+            texts = [_clean_cell_text(c.text) for c in sorted(row_cells, key=lambda c: c.col)]
+            line = " ".join(t for t in texts if t)
+            if line:
+                lines.append(line)
+            continue
+        left, right = sorted(row_cells, key=lambda c: c.col)
+        key = _clean_cell_text(left.text).rstrip(":").rstrip("：").strip()
+        value = _clean_cell_text(right.text)
+        if key and value:
+            lines.append(f"**{key}**: {value}")
+        elif key:
+            lines.append(f"**{key}**")
+        elif value:
+            lines.append(value)
+    return "\n\n".join(lines)
+
+
+def _is_layout_table(table: Table) -> bool:
+    """Detect tables that are really document layout containers.
+
+    A layout table wraps an entire page section rather than presenting
+    tabular data. Signals:
+    - Few columns (1-3) with highly variable cell text lengths
+    - Some cells contain long paragraph-like text (> 80 chars)
+    - Row count is high relative to column count
+    """
+    if table.cols > 4:
+        return False
+
+    cell_lengths = [len(c.text.strip()) for c in table.cells if c.text.strip()]
+    if not cell_lengths:
+        return False
+
+    long_cells = sum(1 for length in cell_lengths if length > 80)
+    if long_cells == 0:
+        return False
+
+    if table.cols <= 2 and long_cells >= len(cell_lengths) * 0.3:
+        return True
+
+    if table.cols <= 3 and table.rows >= 5:
+        mean_len = sum(cell_lengths) / len(cell_lengths)
+        if mean_len == 0:
+            return False
+        variance = sum((x - mean_len) ** 2 for x in cell_lengths) / len(cell_lengths)
+        cv = (variance ** 0.5) / mean_len
+        if cv > 1.0 and long_cells >= 2:
+            return True
+
+    return False
+
+
+def _layout_table_to_text(table: Table) -> str:
+    """Render a layout table as structured text preserving row order."""
+    lines: list[str] = []
+    for row_idx in range(table.rows):
+        row_cells = sorted(
+            [c for c in table.cells if c.row == row_idx],
+            key=lambda c: c.col,
+        )
+        for cell in row_cells:
+            text = _clean_cell_text(cell.text)
+            if text:
+                lines.append(text)
+    return "\n\n".join(lines)
+
+
 def table_to_markdown(table: Table) -> str:
     """Convert a Table to a markdown table string."""
     if not table.cells or table.rows == 0 or table.cols == 0:
@@ -65,14 +206,17 @@ def table_to_markdown(table: Table) -> str:
             return "\n> **Table extraction failed - manual review required**\n"
         return ""
 
+    if _is_form_like(table):
+        return _form_to_text(table)
+
+    if _is_layout_table(table):
+        return _layout_table_to_text(table)
+
     # Build 2D grid — propagate merged cell values across their span
     grid: list[list[str]] = [["" for _ in range(table.cols)] for _ in range(table.rows)]
     for cell in table.cells:
         if 0 <= cell.row < table.rows and 0 <= cell.col < table.cols:
-            cleaned = cell.text.strip()
-            cleaned = re.sub(r"\s*\n\s*", " ", cleaned)
-            cleaned = re.sub(r"\s{2,}", " ", cleaned)
-            cleaned = re.sub(r"·{3,}", "", cleaned).strip()
+            cleaned = _clean_cell_text(cell.text)
             cleaned = cleaned.replace("|", "\\|")
             if not cleaned:
                 continue
@@ -202,6 +346,9 @@ def assemble_page(
             # If alt_text is present, output text instead of image reference
             extracted = (elem.alt_text or "").strip()
             if extracted:
+                extracted = _repair_text(extracted)
+                if not extracted:
+                    continue
                 classification = _classify_image_text(
                     extracted, elem, page_height,
                 )

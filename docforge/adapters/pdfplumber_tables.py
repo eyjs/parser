@@ -373,6 +373,8 @@ class PdfplumberTableExtractor:
         1. Table bbox covers >= 80% of page area (layout ruling lines)
         2. Column count >= 10 (abnormal for document tables)
         3. Average cell text length < 3 chars (fragmented layout cells)
+        4. Large-area table (>= 60%) with few columns and paragraph-length cells
+        5. Single-column table (not a real table)
         """
         page_area = page_width * page_height
         if page_area <= 0:
@@ -412,6 +414,26 @@ class PdfplumberTableExtractor:
                         avg_len, table.rows, table.cols,
                     )
                     continue
+
+            # Check 4: Large table with paragraph-length cells (document layout)
+            if area_ratio >= 0.6 and table.cols <= 3 and table.cells:
+                cell_texts = [c.text.strip() for c in table.cells if c.text.strip()]
+                long_cells = sum(1 for t in cell_texts if len(t) > 80)
+                if long_cells >= 2 or (cell_texts and long_cells / max(len(cell_texts), 1) >= 0.3):
+                    logger.info(
+                        "Filtered document-layout table: %.0f%% page area, "
+                        "%d long cells (rows=%d, cols=%d)",
+                        area_ratio * 100, long_cells, table.rows, table.cols,
+                    )
+                    continue
+
+            # Check 5: Single-column table (not a real table)
+            if table.cols == 1 and table.rows >= 2:
+                logger.info(
+                    "Filtered single-column table: rows=%d",
+                    table.rows,
+                )
+                continue
 
             filtered.append(table)
 

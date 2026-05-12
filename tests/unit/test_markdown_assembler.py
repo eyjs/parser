@@ -14,7 +14,11 @@ from docforge.infrastructure.config import ParserConfig
 from docforge.domain.models import ParsedImage
 from docforge.processing.markdown_assembler import (
     _classify_image_text,
+    _clean_cell_text,
     _deduplicate_tables,
+    _is_form_like,
+    _is_layout_table,
+    _repair_text,
     assemble_page,
     finalize_markdown,
     table_to_markdown,
@@ -429,6 +433,198 @@ class TestTableDeduplication:
         # Only the first table should appear
         assert "ValueA" in md
         assert "ValueB" not in md
+
+
+class TestCleanCellText:
+    """Test CID stripping and noise removal from table cells."""
+
+    def test_strip_cid(self) -> None:
+        assert _clean_cell_text("Hello (cid:123) world") == "Hello world"
+
+    def test_strip_multiple_cid(self) -> None:
+        assert _clean_cell_text("(cid:1)(cid:2) text (cid:3)") == "text"
+
+    def test_status_ok_noise(self) -> None:
+        assert _clean_cell_text("상태 OK") == ""
+        assert _clean_cell_text("  상태  OK  ") == ""
+
+    def test_normal_text_unchanged(self) -> None:
+        assert _clean_cell_text("보험계약자") == "보험계약자"
+
+    def test_whitespace_normalization(self) -> None:
+        assert _clean_cell_text("a  b   c") == "a b c"
+
+
+class TestRepairText:
+    """Test mojibake repair and CID cleanup for image alt_text."""
+
+    def test_strip_cid(self) -> None:
+        assert _repair_text("Hello (cid:144) world") == "Hello world"
+
+    def test_status_ok_removed(self) -> None:
+        assert _repair_text("상태 OK") == ""
+
+    def test_normal_text_unchanged(self) -> None:
+        assert _repair_text("전자항공권") == "전자항공권"
+
+    def test_mojibake_repair(self) -> None:
+        original = "전자항공권"
+        garbled = original.encode("utf-8").decode("latin1")
+        repaired = _repair_text(garbled)
+        assert repaired == original
+
+
+class TestFormLikeDetection:
+    """Test form-like table detection."""
+
+    def test_form_like_2col(self) -> None:
+        cells = (
+            TableCell(text="이름:", row=0, col=0),
+            TableCell(text="홍길동", row=0, col=1),
+            TableCell(text="생년월일:", row=1, col=0),
+            TableCell(text="1990-01-01", row=1, col=1),
+            TableCell(text="연락처:", row=2, col=0),
+            TableCell(text="010-1234-5678", row=2, col=1),
+        )
+        table = Table(
+            cells=cells, rows=3, cols=2,
+            bbox=BBox(x0=0, y0=0, x1=400, y1=300),
+        )
+        assert _is_form_like(table)
+
+    def test_data_table_not_form(self) -> None:
+        cells = (
+            TableCell(text="구분", row=0, col=0),
+            TableCell(text="보험기간", row=0, col=1),
+            TableCell(text="가입나이", row=0, col=2),
+            TableCell(text="상해입원", row=1, col=0),
+            TableCell(text="1년", row=1, col=1),
+            TableCell(text="5~90세", row=1, col=2),
+        )
+        table = Table(
+            cells=cells, rows=2, cols=3,
+            bbox=BBox(x0=0, y0=0, x1=300, y1=200),
+        )
+        assert not _is_form_like(table)
+
+    def test_form_renders_as_key_value(self) -> None:
+        cells = (
+            TableCell(text="승객명:", row=0, col=0),
+            TableCell(text="김철수", row=0, col=1),
+            TableCell(text="편명:", row=1, col=0),
+            TableCell(text="KE123", row=1, col=1),
+        )
+        table = Table(
+            cells=cells, rows=2, cols=2,
+            bbox=BBox(x0=0, y0=0, x1=300, y1=200),
+        )
+        md = table_to_markdown(table)
+        assert "**승객명**" in md
+        assert "김철수" in md
+        assert "**편명**" in md
+        assert "KE123" in md
+        assert "|" not in md
+
+
+class TestLayoutTableDetection:
+    """Test layout table detection."""
+
+    def test_layout_table_with_long_cells(self) -> None:
+        long_text = "이 보험계약은 보험계약자와 보험회사 사이에 체결된 계약으로서 보험계약자가 보험료를 납입하고 보험회사가 보험금을 지급합니다. 보험금 지급사유가 발생하였을 때에는 관련 서류를 갖추어 보험회사에 청구하여야 합니다."
+        cells = (
+            TableCell(text="보험계약 안내", row=0, col=0),
+            TableCell(text=long_text, row=1, col=0),
+            TableCell(text=long_text, row=2, col=0),
+        )
+        table = Table(
+            cells=cells, rows=3, cols=1,
+            bbox=BBox(x0=0, y0=0, x1=500, y1=700),
+        )
+        assert _is_layout_table(table)
+
+    def test_layout_table_renders_as_text(self) -> None:
+        long_text = "이 보험계약은 보험계약자와 보험회사 사이에 체결된 계약으로서 보험계약자가 보험료를 납입하고 보험회사가 보험금을 지급합니다. 보험금 지급사유가 발생하였을 때에는 관련 서류를 갖추어 보험회사에 청구하여야 합니다."
+        cells = (
+            TableCell(text="안내", row=0, col=0),
+            TableCell(text=long_text, row=0, col=1),
+            TableCell(text="내용", row=1, col=0),
+            TableCell(text=long_text, row=1, col=1),
+        )
+        table = Table(
+            cells=cells, rows=2, cols=2,
+            bbox=BBox(x0=0, y0=0, x1=500, y1=500),
+        )
+        md = table_to_markdown(table)
+        assert "|" not in md
+        assert long_text in md
+
+    def test_normal_data_table_not_layout(self) -> None:
+        cells = (
+            TableCell(text="구분", row=0, col=0),
+            TableCell(text="금액", row=0, col=1),
+            TableCell(text="A", row=1, col=0),
+            TableCell(text="1000", row=1, col=1),
+        )
+        table = Table(
+            cells=cells, rows=2, cols=2,
+            bbox=BBox(x0=0, y0=0, x1=300, y1=200),
+        )
+        assert not _is_layout_table(table)
+
+
+class TestTableCidCleanup:
+    """Test that CID references are cleaned from table cells during rendering."""
+
+    def test_cid_in_table_cells_stripped(self) -> None:
+        cells = (
+            TableCell(text="Header", row=0, col=0),
+            TableCell(text="Value", row=0, col=1),
+            TableCell(text="(cid:144) text", row=1, col=0),
+            TableCell(text="normal", row=1, col=1),
+        )
+        table = Table(
+            cells=cells, rows=2, cols=2,
+            bbox=BBox(x0=0, y0=0, x1=300, y1=200),
+        )
+        md = table_to_markdown(table)
+        assert "(cid:" not in md
+        assert "text" in md
+
+
+class TestImageAltTextRepair:
+    """Test that mojibake in image alt_text is repaired during assembly."""
+
+    def test_mojibake_alt_text_repaired(self) -> None:
+        original_text = "전자항공권"
+        garbled = original_text.encode("utf-8").decode("latin1")
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(_make_image(alt_text=garbled, y0=300.0),),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert original_text in md
+        assert garbled not in md
+
+    def test_cid_in_alt_text_stripped(self) -> None:
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(_make_image(alt_text="(cid:123) 텍스트 (cid:456)", y0=300.0),),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert "(cid:" not in md
+        assert "텍스트" in md
 
 
 class TestFinalMarkdown:
