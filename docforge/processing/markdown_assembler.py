@@ -27,11 +27,8 @@ _UNICODE_BULLET_RE = re.compile(r"^[●•][​\s]*")
 _UNICODE_SUB_BULLET_RE = re.compile(r"^[○◦][​\s]*")
 _CID_PATTERN = re.compile(r"\(cid:\s*\d+\s*\)")
 _STATUS_NOISE_RE = re.compile(r"^\s*상태\s*OK\s*$", re.IGNORECASE)
-_MOJIBAKE_SEQUENCES = re.compile(
-    r"[Ã¢Ã£Ã¤Ã¥Ã¦Ã§Ã¨Ã©]"
-    r"|[\xc0-\xdf][\x80-\xbf]"
-    r"|[\xe0-\xef][\x80-\xbf]"
-)
+_MOJIBAKE_HINT = re.compile(r"[\xc0-\xff]")
+_KOREAN_RE = re.compile(r"[가-힣]")
 _ENCODING_PAIRS: list[tuple[str, str]] = [
     ("latin1", "utf-8"),
     ("cp1252", "utf-8"),
@@ -44,14 +41,19 @@ def _repair_text(text: str) -> str:
     text = re.sub(r"  +", " ", text).strip()
     if _STATUS_NOISE_RE.match(text):
         return ""
-    if _MOJIBAKE_SEQUENCES.search(text):
+    if _MOJIBAKE_HINT.search(text):
         for src, tgt in _ENCODING_PAIRS:
             try:
-                candidate = text.encode(src, errors="ignore").decode(tgt, errors="ignore")
-                if not _MOJIBAKE_SEQUENCES.search(candidate) and len(candidate) >= len(text) * 0.2:
-                    return candidate.strip()
+                raw = text.encode(src, errors="ignore")
+                candidate = raw.decode(tgt, errors="strict")
             except (UnicodeDecodeError, UnicodeEncodeError):
                 continue
+            if (
+                len(candidate) >= len(text) * 0.2
+                and _KOREAN_RE.search(candidate)
+                and not _MOJIBAKE_HINT.search(candidate)
+            ):
+                return candidate.strip()
     return text
 
 
@@ -154,25 +156,34 @@ def _is_layout_table(table: Table) -> bool:
 
     A layout table wraps an entire page section rather than presenting
     tabular data. Signals:
+    - Wide tables (5+ cols) with very few rows — pdfplumber layout artifact
     - Few columns (1-3) with highly variable cell text lengths
     - Some cells contain long paragraph-like text (> 80 chars)
-    - Row count is high relative to column count
     """
-    if table.cols > 4:
-        return False
-
     cell_lengths = [len(c.text.strip()) for c in table.cells if c.text.strip()]
     if not cell_lengths:
         return False
 
     long_cells = sum(1 for length in cell_lengths if length > 80)
+
+    if table.cols >= 5 and table.rows <= 3:
+        if table.cols >= 7:
+            return True
+        non_empty = len(cell_lengths)
+        total = table.rows * table.cols
+        if non_empty < total * 0.5 or long_cells >= 1:
+            return True
+
+    if table.cols > 4:
+        return False
+
     if long_cells == 0:
         return False
 
     if table.cols <= 2 and long_cells >= len(cell_lengths) * 0.3:
         return True
 
-    if table.cols <= 3 and table.rows >= 5:
+    if table.cols <= 4 and table.rows >= 5:
         mean_len = sum(cell_lengths) / len(cell_lengths)
         if mean_len == 0:
             return False
@@ -381,6 +392,10 @@ def assemble_page(
                 continue
 
             text = elem.text.strip()
+            if not text:
+                continue
+
+            text = _repair_text(text)
             if not text:
                 continue
 

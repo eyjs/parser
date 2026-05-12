@@ -416,7 +416,7 @@ class PdfplumberTableExtractor:
                     continue
 
             # Check 4: Large table with paragraph-length cells (document layout)
-            if area_ratio >= 0.6 and table.cols <= 3 and table.cells:
+            if area_ratio >= 0.4 and table.cells:
                 cell_texts = [c.text.strip() for c in table.cells if c.text.strip()]
                 long_cells = sum(1 for t in cell_texts if len(t) > 80)
                 if long_cells >= 2 or (cell_texts and long_cells / max(len(cell_texts), 1) >= 0.3):
@@ -432,6 +432,15 @@ class PdfplumberTableExtractor:
                 logger.info(
                     "Filtered single-column table: rows=%d",
                     table.rows,
+                )
+                continue
+
+            # Check 6: Wide sparse table (many cols, few rows) — layout artifact
+            if table.cols >= 6 and table.rows <= 3 and area_ratio >= 0.25:
+                logger.info(
+                    "Filtered wide sparse table: cols=%d, rows=%d, "
+                    "%.0f%% page area",
+                    table.cols, table.rows, area_ratio * 100,
                 )
                 continue
 

@@ -711,3 +711,128 @@ class TestFinalMarkdown:
         )
         result = finalize_markdown(["word   many    spaces"], metadata)
         assert "word many spaces" in result
+
+
+class TestWideLayoutTableDetection:
+    """Test that wide tables (e.g. 8-col e-ticket) are detected as layout."""
+
+    def test_8col_sparse_table_is_layout(self) -> None:
+        cells = tuple(
+            TableCell(text=t, row=0, col=c)
+            for c, t in enumerate(["KE", "ICN", "NRT", "", "", "", "", ""])
+        ) + tuple(
+            TableCell(text=t, row=1, col=c)
+            for c, t in enumerate(["", "14:00", "17:30", "", "", "", "", ""])
+        )
+        table = Table(
+            cells=cells, rows=2, cols=8,
+            bbox=BBox(x0=0, y0=0, x1=500, y1=100),
+        )
+        assert _is_layout_table(table)
+
+    def test_7col_table_is_layout(self) -> None:
+        cells = tuple(
+            TableCell(text=f"col{c}", row=0, col=c) for c in range(7)
+        )
+        table = Table(
+            cells=cells, rows=1, cols=7,
+            bbox=BBox(x0=0, y0=0, x1=500, y1=50),
+        )
+        assert _is_layout_table(table)
+
+    def test_4col_data_table_not_layout(self) -> None:
+        cells = tuple(
+            TableCell(text="항목", row=0, col=c) for c in range(4)
+        ) + tuple(
+            TableCell(text="값", row=r, col=c)
+            for r in range(1, 6) for c in range(4)
+        )
+        table = Table(
+            cells=cells, rows=6, cols=4,
+            bbox=BBox(x0=0, y0=0, x1=400, y1=300),
+        )
+        assert not _is_layout_table(table)
+
+
+class TestRepairTextFunction:
+    """Test _repair_text standalone behavior."""
+
+    def test_cp1252_mojibake_repaired(self) -> None:
+        original = "한글"
+        garbled = original.encode("utf-8").decode("cp1252")
+        result = _repair_text(garbled)
+        assert "한글" in result
+
+    def test_latin1_mojibake_repaired(self) -> None:
+        original = "보험계약"
+        garbled = original.encode("utf-8").decode("latin1")
+        result = _repair_text(garbled)
+        assert "보험계약" in result
+
+    def test_status_ok_noise_removed(self) -> None:
+        assert _repair_text("상태 OK") == ""
+        assert _repair_text("  상태  OK  ") == ""
+
+    def test_cid_stripped(self) -> None:
+        result = _repair_text("Hello (cid:123) world (cid:456)")
+        assert "(cid:" not in result
+        assert "Hello" in result
+        assert "world" in result
+
+    def test_clean_text_unchanged(self) -> None:
+        assert _repair_text("정상적인 텍스트") == "정상적인 텍스트"
+
+
+class TestTextBlockRepairInAssembly:
+    """Test that _repair_text is applied to text blocks during assemble_page."""
+
+    def test_text_block_cid_stripped(self) -> None:
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(_make_block("(cid:1) 중요한 내용 (cid:2)", y0=100.0),),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert "(cid:" not in md
+        assert "중요한 내용" in md
+
+    def test_text_block_status_ok_filtered(self) -> None:
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(
+                _make_block("본문 내용", y0=100.0),
+                _make_block("상태 OK", y0=200.0),
+                _make_block("추가 내용", y0=300.0),
+            ),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert "상태 OK" not in md
+        assert "본문 내용" in md
+        assert "추가 내용" in md
+
+    def test_text_block_mojibake_repaired(self) -> None:
+        original = "보험계약"
+        garbled = original.encode("utf-8").decode("latin1")
+        config = ParserConfig()
+        page = PageContent(
+            page_num=1,
+            page_type=PageType.DIGITAL,
+            blocks=(_make_block(garbled, y0=100.0),),
+            tables=(),
+            raw_text="",
+            height=800.0,
+            images=(),
+        )
+        md = assemble_page(page, 10.0, config)
+        assert "보험계약" in md
