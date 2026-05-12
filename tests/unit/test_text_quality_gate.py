@@ -128,6 +128,16 @@ class TestComputeLanguageConsistency:
         score = _compute_language_consistency("Some text here", "fr")
         assert score == 0.8
 
+    def test_latin_extended_in_korean_doc_penalized(self):
+        text = "Àëïöü" * 5
+        score = _compute_language_consistency(text, "ko")
+        assert score < 0.5
+
+    def test_mixed_hangul_with_latin_extended_penalized(self):
+        text = "보험 Àëïöü계약"
+        score = _compute_language_consistency(text, "ko")
+        assert score < 1.0
+
 
 # ---------------------------------------------------------------------------
 # Composite Score Tests

@@ -11,12 +11,14 @@ from docforge.processing.block_classifier import (
     ALL_SIGNALS,
     BBoxHeightRatioSignal,
     BlockClassifier,
+    DataBearingSignal,
     DEFAULT_WEIGHTS,
     EndsWithoutPeriodSignal,
     FontDeviationSignal,
     FontWeightSignal,
     HasNumberingSignal,
     HEADING_THRESHOLD,
+    HOMOGENEOUS_FONT_WEIGHTS,
     LayoutLabelSignal,
     SignalContext,
     TextLengthSignal,
@@ -467,3 +469,222 @@ class TestSignalProtocol:
             assert signal.name in DEFAULT_WEIGHTS, (
                 f"Signal {signal.name} missing from DEFAULT_WEIGHTS"
             )
+
+    def test_homogeneous_weights_have_all_signals(self):
+        for signal in ALL_SIGNALS:
+            assert signal.name in HOMOGENEOUS_FONT_WEIGHTS, (
+                f"Signal {signal.name} missing from HOMOGENEOUS_FONT_WEIGHTS"
+            )
+
+
+# ---------------------------------------------------------------------------
+# DataBearingSignal Tests
+# ---------------------------------------------------------------------------
+
+
+class TestDataBearingSignal:
+    signal = DataBearingSignal()
+
+    def test_plain_section_label(self):
+        """Korean section labels should NOT fire."""
+        assert self.signal.compute(SignalContext(text="승객 정보")) == 0.0
+        assert self.signal.compute(SignalContext(text="여정 정보")) == 0.0
+        assert self.signal.compute(SignalContext(text="탑승 정보")) == 0.0
+
+    def test_key_value_pattern(self):
+        """Key: Value patterns should fire."""
+        assert self.signal.compute(SignalContext(text="Gate: 25")) == 1.0
+        assert self.signal.compute(SignalContext(text="Seat: 12A")) == 1.0
+
+    def test_arrow_route(self):
+        """Route arrows should fire."""
+        assert self.signal.compute(SignalContext(text="ICN → NRT")) == 1.0
+        assert self.signal.compute(SignalContext(text="A -> B")) == 1.0
+
+    def test_date_pattern(self):
+        """ISO dates should fire."""
+        assert self.signal.compute(SignalContext(text="2026-05-15 10:30")) == 1.0
+        assert self.signal.compute(SignalContext(text="2024/01/01")) == 1.0
+
+    def test_time_pattern(self):
+        """Time HH:MM should fire."""
+        assert self.signal.compute(SignalContext(text="10:30")) == 1.0
+
+    def test_slash_separated_names(self):
+        """Uppercase slash-separated tokens should fire."""
+        assert self.signal.compute(SignalContext(text="HONG/GILDONG")) == 1.0
+        assert self.signal.compute(SignalContext(text="ICN/NRT")) == 1.0
+
+    def test_empty_text(self):
+        assert self.signal.compute(SignalContext(text="")) == 0.0
+
+    def test_korean_numbered_heading_with_colon_no_fire(self):
+        """Korean legal headings like '제1조: 목적' should NOT fire.
+        The key-value pattern requires ^[letters]+: but '제1조:' contains a digit."""
+        assert self.signal.compute(SignalContext(text="제1조: 목적")) == 0.0
+
+    def test_chapter_heading_no_fire(self):
+        """'Chapter 1: Intro' has digits before colon, shouldn't match key-value."""
+        assert self.signal.compute(SignalContext(text="Chapter 1: Introduction")) == 0.0
+
+    def test_plain_korean_name(self):
+        """A plain name without data patterns should NOT fire."""
+        assert self.signal.compute(SignalContext(text="홍길동")) == 0.0
+
+    def test_english_heading_no_fire(self):
+        """Normal English headings should NOT fire."""
+        assert self.signal.compute(SignalContext(text="Introduction")) == 0.0
+        assert self.signal.compute(SignalContext(text="Summary")) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Homogeneous Font Mode Integration Tests
+# ---------------------------------------------------------------------------
+
+
+class TestHomogeneousFontClassification:
+    """Integration tests for font-homogeneous pages (e.g., boarding passes).
+
+    In homogeneous mode, vertical_gap is the primary discriminator.
+    Section headers have large gaps; data values follow tightly.
+    """
+
+    def _make_classifier(self):
+        return BlockClassifier(weights=HOMOGENEOUS_FONT_WEIGHTS)
+
+    def test_section_header_with_gap_is_heading(self):
+        """Section label with large gap should be classified as heading."""
+        classifier = self._make_classifier()
+        ctx = SignalContext(
+            text="승객 정보",
+            font_size=10.0,
+            avg_font_size=10.0,
+            bbox=BBox(50, 150, 200, 165),
+            prev_bbox=BBox(50, 50, 400, 65),  # large gap: 150-65=85
+            page_height=800,
+            page_width=600,
+        )
+        block_type, _ = classifier.classify(ctx)
+        assert block_type == BlockType.HEADING
+
+    def test_data_value_tight_spacing_is_text(self):
+        """Data value with tight spacing should be classified as text."""
+        classifier = self._make_classifier()
+        ctx = SignalContext(
+            text="홍길동",
+            font_size=10.0,
+            avg_font_size=10.0,
+            bbox=BBox(50, 170, 200, 185),
+            prev_bbox=BBox(50, 150, 200, 165),  # small gap: 170-165=5
+            page_height=800,
+            page_width=600,
+        )
+        block_type, _ = classifier.classify(ctx)
+        assert block_type == BlockType.TEXT
+
+    def test_data_bearing_suppresses_even_with_gap(self):
+        """Data values with key-value pattern stay text even with moderate gap."""
+        classifier = self._make_classifier()
+        ctx = SignalContext(
+            text="Gate: 25",
+            font_size=10.0,
+            avg_font_size=10.0,
+            bbox=BBox(50, 200, 200, 215),
+            prev_bbox=BBox(50, 100, 400, 115),  # large gap: 200-115=85
+            page_height=800,
+            page_width=600,
+        )
+        block_type, _ = classifier.classify(ctx)
+        assert block_type == BlockType.TEXT
+
+    def test_route_pattern_is_text(self):
+        """Route pattern suppresses heading classification."""
+        classifier = self._make_classifier()
+        ctx = SignalContext(
+            text="ICN → NRT",
+            font_size=10.0,
+            avg_font_size=10.0,
+            bbox=BBox(50, 200, 200, 215),
+            prev_bbox=BBox(50, 100, 400, 115),
+            page_height=800,
+            page_width=600,
+        )
+        block_type, _ = classifier.classify(ctx)
+        assert block_type == BlockType.TEXT
+
+    def test_date_time_is_text(self):
+        """Date-time data stays text regardless of gap."""
+        classifier = self._make_classifier()
+        ctx = SignalContext(
+            text="2026-05-15 10:30",
+            font_size=10.0,
+            avg_font_size=10.0,
+            bbox=BBox(50, 200, 250, 215),
+            prev_bbox=BBox(50, 100, 400, 115),
+            page_height=800,
+            page_width=600,
+        )
+        block_type, _ = classifier.classify(ctx)
+        assert block_type == BlockType.TEXT
+
+    def test_full_boarding_pass_sequence(self):
+        """Simulates realistic boarding pass block sequence with varying gaps."""
+        classifier = self._make_classifier()
+        page_h, page_w = 800, 600
+
+        blocks_data = [
+            # (text, y0, y1, prev_y1) - realistic spacing
+            ("대한항공 탑승권", 30, 45, None),       # Title/preamble
+            ("승객 정보", 100, 115, 45),             # Section header (gap: 55)
+            ("홍길동", 125, 140, 115),               # Data (gap: 10)
+            ("HONG/GILDONG", 150, 165, 140),         # Data (gap: 10)
+            ("여정 정보", 220, 235, 165),            # Section header (gap: 55)
+            ("ICN → NRT", 245, 260, 235),            # Data (gap: 10)
+            ("2026-05-15 10:30", 270, 285, 260),     # Data (gap: 10)
+            ("탑승 정보", 340, 355, 285),            # Section header (gap: 55)
+            ("Gate: 25", 365, 380, 355),             # Data (gap: 10)
+            ("Seat: 12A", 390, 405, 380),            # Data (gap: 10)
+        ]
+
+        results = []
+        for text, y0, y1, prev_y1 in blocks_data:
+            prev_bbox = BBox(50, 0, 200, prev_y1) if prev_y1 is not None else None
+            ctx = SignalContext(
+                text=text,
+                font_size=10.0,
+                avg_font_size=10.0,
+                bbox=BBox(50, y0, 200, y1),
+                prev_bbox=prev_bbox,
+                page_height=page_h,
+                page_width=page_w,
+            )
+            block_type, _ = classifier.classify(ctx)
+            results.append((text, block_type))
+
+        # Section headers should be HEADING
+        assert results[1] == ("승객 정보", BlockType.HEADING)
+        assert results[4] == ("여정 정보", BlockType.HEADING)
+        assert results[7] == ("탑승 정보", BlockType.HEADING)
+
+        # Data values should be TEXT
+        assert results[2] == ("홍길동", BlockType.TEXT)
+        assert results[3] == ("HONG/GILDONG", BlockType.TEXT)
+        assert results[5] == ("ICN → NRT", BlockType.TEXT)
+        assert results[6] == ("2026-05-15 10:30", BlockType.TEXT)
+        assert results[8] == ("Gate: 25", BlockType.TEXT)
+        assert results[9] == ("Seat: 12A", BlockType.TEXT)
+
+    def test_numbering_overrides_without_gap(self):
+        """Numbered headings are detected even without vertical gap."""
+        classifier = self._make_classifier()
+        ctx = SignalContext(
+            text="제1조 목적",
+            font_size=10.0,
+            avg_font_size=10.0,
+            bbox=BBox(50, 110, 250, 125),
+            prev_bbox=BBox(50, 95, 400, 110),  # tight spacing
+            page_height=800,
+            page_width=600,
+        )
+        block_type, _ = classifier.classify(ctx)
+        assert block_type == BlockType.HEADING

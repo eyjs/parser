@@ -257,6 +257,41 @@ class WidthRatioSignal:
         return 0.0
 
 
+class DataBearingSignal:
+    """Detects structured data content (values, identifiers, measurements).
+
+    Fires high when text contains syntactic patterns typical of data fields
+    rather than section labels. Used with negative weight in homogeneous-font
+    mode to suppress false-positive heading classification of data values.
+    """
+
+    _DATA_PATTERNS: list[re.Pattern[str]] = [
+        # Key-value: single word (letters only) followed by colon and value
+        re.compile(r"^[A-Za-z가-힣]+\s*:\s+\S"),
+        # Route/direction arrows
+        re.compile(r"[→⇒⟶]|->"),
+        # ISO date
+        re.compile(r"\d{4}[-/]\d{2}[-/]\d{2}"),
+        # Time (HH:MM)
+        re.compile(r"\d{1,2}:\d{2}"),
+        # Slash-separated uppercase tokens (names, codes)
+        re.compile(r"[A-Z]{2,}/[A-Z]{2,}"),
+    ]
+
+    @property
+    def name(self) -> str:
+        return "data_bearing"
+
+    def compute(self, ctx: SignalContext) -> float:
+        stripped = ctx.text.strip()
+        if not stripped:
+            return 0.0
+        for pattern in self._DATA_PATTERNS:
+            if pattern.search(stripped):
+                return 1.0
+        return 0.0
+
+
 # ---------------------------------------------------------------------------
 # Default signal set
 # ---------------------------------------------------------------------------
@@ -271,24 +306,44 @@ ALL_SIGNALS: list[Signal] = [
     LayoutLabelSignal(),
     EndsWithoutPeriodSignal(),
     WidthRatioSignal(),
+    DataBearingSignal(),
 ]
 
 # Default weights -- tuned for general documents.
 # Domain profiles can override these.
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "font_deviation": 0.20,
+    "font_deviation": 0.13,
     "font_weight": 0.10,
     "bbox_height_ratio": 0.10,
     "vertical_gap": 0.08,
     "text_length": 0.10,
-    "has_numbering": 0.18,
+    "has_numbering": 0.25,
     "layout_label": 0.12,
     "ends_without_period": 0.05,
     "width_ratio": 0.07,
+    "data_bearing": 0.0,
 }
 
 # Heading threshold: weighted sum above this -> classify as HEADING
 HEADING_THRESHOLD = 0.35
+
+# Adaptive weights for font-homogeneous pages where font_deviation,
+# font_weight, and bbox_height_ratio signals produce zero information.
+# Key design: text_length + ends_without_period + width_ratio < HEADING_THRESHOLD
+# so blocks MUST have vertical_gap or numbering evidence to qualify.
+# data_bearing has negative weight to suppress data-field false positives.
+HOMOGENEOUS_FONT_WEIGHTS: dict[str, float] = {
+    "font_deviation": 0.0,
+    "font_weight": 0.0,
+    "bbox_height_ratio": 0.0,
+    "vertical_gap": 0.25,
+    "text_length": 0.12,
+    "has_numbering": 0.25,
+    "layout_label": 0.15,
+    "ends_without_period": 0.05,
+    "width_ratio": 0.08,
+    "data_bearing": -0.25,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -491,12 +546,21 @@ def classify_blocks(
     if not blocks:
         return []
 
-    if classifier is None:
-        classifier = BlockClassifier()
-
     # Precompute page-level statistics
     font_sizes = [b.font.size for b in blocks if b.font.size > 0]
     font_std = statistics.stdev(font_sizes) if len(font_sizes) >= 2 else 0.0
+
+    # Detect font homogeneity: when CV < 0.05, font-based signals are
+    # uninformative — switch to content/spatial-weighted classification.
+    if classifier is None:
+        font_mean = statistics.mean(font_sizes) if font_sizes else 0.0
+        is_homogeneous = (
+            font_mean > 0
+            and len(font_sizes) >= 5
+            and (font_std / font_mean) < 0.05
+        )
+        weights = HOMOGENEOUS_FONT_WEIGHTS if is_homogeneous else None
+        classifier = BlockClassifier(weights=weights)
 
     heights = [b.bbox.height for b in blocks if b.bbox.height > 0]
     median_h = statistics.median(heights) if heights else 0.0
@@ -604,4 +668,5 @@ __all__ = [
     "LayoutLabelSignal",
     "EndsWithoutPeriodSignal",
     "WidthRatioSignal",
+    "DataBearingSignal",
 ]

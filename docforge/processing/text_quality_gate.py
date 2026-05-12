@@ -46,6 +46,8 @@ _MOJIBAKE_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"�"),
     # Common mojibake trigram patterns
     re.compile(r"[Ã¢Ã£Ã¤Ã¥Ã¦Ã§Ã¨Ã©]"),
+    # WinAnsiEncoding mojibake: 3+ consecutive Latin Extended chars
+    re.compile(r"[À-ɏ]{3,}"),
 ]
 
 # Encoding recovery attempts (source -> target)
@@ -162,15 +164,17 @@ def _compute_printable_ratio(text: str) -> float:
 def _compute_language_consistency(text: str, expected_lang: str = "ko") -> float:
     """Score language consistency (1.0 = consistent with expected language).
 
-    Simple heuristic: checks that the dominant script matches expectations.
-    For Korean (default), we expect a mix of Hangul + ASCII.
+    Distinguishes basic ASCII (normal in any language) from Latin Extended
+    (U+00C0--U+024F), which in a Korean context signals WinAnsiEncoding
+    mojibake — PDF fonts that map Korean glyphs to Latin Extended codepoints.
     """
     if not text or len(text.strip()) < 5:
         return 1.0
 
     total = 0
     hangul = 0
-    latin = 0
+    ascii_basic = 0
+    latin_extended = 0
     cjk = 0
 
     for ch in text:
@@ -180,8 +184,10 @@ def _compute_language_consistency(text: str, expected_lang: str = "ko") -> float
         cp = ord(ch)
         if 0xAC00 <= cp <= 0xD7A3 or 0x3131 <= cp <= 0x318E:
             hangul += 1
-        elif 0x0041 <= cp <= 0x007A or 0x00C0 <= cp <= 0x024F:
-            latin += 1
+        elif 0x0020 <= cp <= 0x007E:
+            ascii_basic += 1
+        elif 0x00C0 <= cp <= 0x024F:
+            latin_extended += 1
         elif 0x4E00 <= cp <= 0x9FFF:
             cjk += 1
 
@@ -189,20 +195,23 @@ def _compute_language_consistency(text: str, expected_lang: str = "ko") -> float
         return 1.0
 
     if expected_lang == "ko":
-        # Korean documents should have Hangul or mixed Hangul+ASCII
-        if hangul > 0:
+        latin_ext_ratio = latin_extended / total if total > 0 else 0.0
+        if hangul > 0 and latin_ext_ratio < 0.1:
             return 1.0
-        if latin > 0 and hangul == 0 and cjk == 0:
-            # Pure latin in a Korean doc is suspicious but not fatal
+        if hangul > 0 and latin_ext_ratio >= 0.1:
+            return max(0.3, 1.0 - latin_ext_ratio * 3.0)
+        if latin_extended > 0 and hangul == 0:
+            return max(0.2, 0.6 - latin_ext_ratio * 2.0)
+        if ascii_basic > 0 and hangul == 0 and latin_extended == 0:
             return 0.6
         return 0.5
 
     if expected_lang == "en":
-        if latin / total > 0.5:
+        if (ascii_basic + latin_extended) / total > 0.5:
             return 1.0
         return 0.5
 
-    return 0.8  # Unknown language -- mild confidence
+    return 0.8
 
 
 def compute_quality_signals(text: str, expected_lang: str = "ko") -> QualitySignals:

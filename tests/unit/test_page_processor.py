@@ -65,7 +65,7 @@ class TestPageProcessorInit:
 
 
 class TestClassifyAndMerge:
-    """``_classify_and_merge`` must use the injected domain profile."""
+    """``_classify_and_merge`` uses the unified signal-based classifier."""
 
     def test_korean_profile_recognizes_jang(self) -> None:
         proc = _make_processor(profile=KoreanLegalProfile())
@@ -85,11 +85,14 @@ class TestClassifyAndMerge:
             for b in result
         )
 
-    def test_korean_profile_does_not_match_chapter(self) -> None:
+    def test_signal_classifier_recognizes_chapter_regardless_of_profile(self) -> None:
         proc = _make_processor(profile=KoreanLegalProfile())
         blocks = [_block("Chapter 1 Introduction")]
         result = proc._classify_and_merge(blocks, PageType.DIGITAL)
-        assert all(b.block_type == BlockType.TEXT for b in result)
+        assert any(
+            b.block_type == BlockType.HEADING and b.heading_level == 1
+            for b in result
+        )
 
     def test_plain_text_unchanged(self) -> None:
         proc = _make_processor()

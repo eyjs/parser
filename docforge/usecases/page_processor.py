@@ -294,7 +294,12 @@ class PageProcessor:
                 clean_blocks, morpheme_analyzer=self._morpheme_analyzer,
             )
 
-            merged_blocks = self._classify_and_merge(clean_blocks, effective_type)
+            merged_blocks = self._classify_and_merge(
+                clean_blocks, effective_type,
+                layout_blocks=layout_blocks,
+                page_height=height,
+                page_width=width,
+            )
 
             if page_ocr_used:
                 merged_blocks = self._apply_heading_detector(
@@ -507,14 +512,17 @@ class PageProcessor:
         if not detector.is_available():
             return []
 
-        is_table_heavy = (
+        strategy_requires_layout = (
             page_strategy is not None
-            and page_strategy.estimated_complexity == "table_heavy"
+            and (
+                page_strategy.estimated_complexity == "table_heavy"
+                or page_strategy.surya_needed
+            )
         )
 
         if (
             page_type not in (PageType.SCANNED, PageType.MIXED)
-            and not is_table_heavy
+            and not strategy_requires_layout
             and not config.layout_detection_all_pages
         ):
             _logger.debug(
@@ -583,33 +591,29 @@ class PageProcessor:
         self,
         clean_blocks: list[TextBlock],
         page_type: PageType,
+        *,
+        layout_blocks: list | None = None,
+        page_height: float = 0.0,
+        page_width: float = 0.0,
     ) -> list[TextBlock]:
         config = self._config
         avg_font_size = self._avg_font_size
         avg_line_gap = self._avg_line_gap
         morpheme_analyzer = self._morpheme_analyzer
-        domain_profile = self._domain_profile
 
-        def _classify(block: TextBlock) -> TextBlock:
-            block_type, heading_level = text_structurer.classify_block(
-                block.text,
-                block.font.size,
-                block.font.is_bold,
-                avg_font_size,
-                config,
-                domain_profile=domain_profile,
-            )
-            return TextBlock(
-                text=block.text,
-                bbox=block.bbox,
-                font=block.font,
-                block_type=block_type,
-                heading_level=heading_level,
-                confidence=block.confidence,
+        from docforge.processing.block_classifier import classify_blocks
+
+        def _signal_classify(blocks: list[TextBlock]) -> list[TextBlock]:
+            return classify_blocks(
+                blocks,
+                avg_font_size=avg_font_size,
+                page_height=page_height,
+                page_width=page_width,
+                layout_blocks=layout_blocks,
             )
 
         if page_type == PageType.DIGITAL:
-            classified = [_classify(b) for b in clean_blocks]
+            classified = _signal_classify(clean_blocks)
             return line_merger.merge_lines(
                 classified, avg_font_size, avg_line_gap, config,
                 morpheme_analyzer=morpheme_analyzer,
@@ -619,7 +623,7 @@ class PageProcessor:
             clean_blocks, avg_font_size, avg_line_gap, config,
             morpheme_analyzer=morpheme_analyzer,
         )
-        return [_classify(b) for b in merged_first]
+        return _signal_classify(merged_first)
 
     def _maybe_vlm_table_fallback(
         self,
@@ -747,9 +751,12 @@ class PageProcessor:
 
             gate = TextQualityGate()
             result: list[TextBlock] = []
+            repaired_count = 0
+            penalized_count = 0
             for block in blocks:
                 qr = gate.evaluate(block.text)
                 if qr.repair_applied and qr.repaired_text:
+                    repaired_count += 1
                     new_confidence = max(0.0, block.confidence - qr.confidence_penalty)
                     result.append(TextBlock(
                         text=qr.repaired_text,
@@ -762,6 +769,7 @@ class PageProcessor:
                         parent_id=block.parent_id,
                     ))
                 elif qr.confidence_penalty > 0:
+                    penalized_count += 1
                     new_confidence = max(0.0, block.confidence - qr.confidence_penalty)
                     result.append(TextBlock(
                         text=block.text,
@@ -775,6 +783,11 @@ class PageProcessor:
                     ))
                 else:
                     result.append(block)
+            if repaired_count or penalized_count:
+                _page_logger.info(
+                    "quality_gate: %d blocks repaired, %d penalized (of %d)",
+                    repaired_count, penalized_count, len(blocks),
+                )
             return result
         except Exception:
             _page_logger.warning(

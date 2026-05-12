@@ -13,6 +13,7 @@ from docforge.processing.document_intelligence import (
     _build_fallback_chain,
     _estimate_complexity,
     _estimate_table_count,
+    _is_font_homogeneous,
     _quick_classify,
 )
 
@@ -448,3 +449,59 @@ class TestEstimateTableCount:
         }
         result = _estimate_table_count({"blocks": [table_block, table_block]})
         assert result == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests: _is_font_homogeneous
+# ---------------------------------------------------------------------------
+
+
+def _make_span_block(sizes: list[float]) -> dict:
+    """Build a fitz text_dict block with given font sizes."""
+    return {
+        "type": 0,
+        "lines": [
+            {"spans": [{"size": s, "text": "x" * 5}]}
+            for s in sizes
+        ],
+    }
+
+
+class TestIsFontHomogeneous:
+    def test_uniform_sizes_returns_true(self) -> None:
+        text_dict = {"blocks": [_make_span_block([9.3] * 10)]}
+        assert _is_font_homogeneous(text_dict) is True
+
+    def test_varied_sizes_returns_false(self) -> None:
+        text_dict = {"blocks": [_make_span_block([9.3, 9.3, 12.0, 14.0, 9.3, 12.0])]}
+        assert _is_font_homogeneous(text_dict) is False
+
+    def test_too_few_spans_returns_false(self) -> None:
+        text_dict = {"blocks": [_make_span_block([9.3, 9.3])]}
+        assert _is_font_homogeneous(text_dict) is False
+
+    def test_empty_blocks_returns_false(self) -> None:
+        text_dict = {"blocks": []}
+        assert _is_font_homogeneous(text_dict) is False
+
+    def test_heading_body_mix_returns_false(self) -> None:
+        text_dict = {"blocks": [
+            _make_span_block([14.0, 10.0, 10.0, 10.0, 10.0, 10.0]),
+        ]}
+        assert _is_font_homogeneous(text_dict) is False
+
+
+class TestSuryaNeededFontHomogeneous:
+    def setup_method(self) -> None:
+        self.intel = DocumentIntelligence()
+
+    def test_surya_needed_when_fonts_homogeneous(self) -> None:
+        blocks = [_make_span_block([9.3] * 10)]
+        page = _make_fitz_page(
+            raw_text="승객 정보 여정 정보 탑승 게이트 좌석 " * 10,
+            image_count=0,
+            blocks=blocks,
+        )
+        doc = _make_fitz_doc([page])
+        report = self.intel.analyze(doc)
+        assert report.pages[0].surya_needed is True

@@ -103,8 +103,13 @@ class DocumentIntelligence:
         else:
             primary_method = "pymupdf_text"
 
-        # Surya needed
-        surya_needed = table_count > _TABLE_COUNT_THRESHOLD or image_count > _IMAGE_COUNT_THRESHOLD
+        # Surya needed: tables, images, or homogeneous fonts (no heading signal)
+        font_homogeneous = _is_font_homogeneous(text_dict)
+        surya_needed = (
+            table_count > _TABLE_COUNT_THRESHOLD
+            or image_count > _IMAGE_COUNT_THRESHOLD
+            or font_homogeneous
+        )
 
         # Fallback chain
         fallback_chain = _build_fallback_chain(primary_method)
@@ -149,6 +154,35 @@ class DocumentIntelligence:
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+
+def _is_font_homogeneous(text_dict: dict) -> bool:
+    """Detect pages where font sizes are too uniform for heading detection.
+
+    When all text spans share nearly the same font size (coefficient of
+    variation < 0.05), font-based heading classification is unreliable
+    and layout detection is needed to identify structural elements.
+    """
+    sizes: list[float] = []
+    for block in text_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                size = span.get("size", 0.0)
+                if size > 0:
+                    sizes.append(size)
+
+    if len(sizes) < 5:
+        return False
+
+    mean = sum(sizes) / len(sizes)
+    if mean == 0:
+        return False
+
+    variance = sum((s - mean) ** 2 for s in sizes) / len(sizes)
+    cv = (variance ** 0.5) / mean
+    return cv < 0.05
 
 
 def _estimate_table_count(text_dict: dict) -> int:
