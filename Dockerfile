@@ -22,7 +22,7 @@ COPY docforge/ ./docforge/
 # Copy Vue build output into the frontend dist directory
 COPY --from=frontend /frontend/dist ./docforge/web/frontend/dist
 
-RUN pip install --no-cache-dir ".[web,morpheme,cloud_vlm]" gunicorn
+RUN pip install --no-cache-dir ".[web,morpheme,cloud_vlm,easyocr]" gunicorn
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1

@@ -57,13 +57,15 @@ def _make_raw_image() -> RawImage:
 
 
 class TestParallelConfig:
-    def test_default_max_workers_is_one(self):
+    def test_default_max_workers_is_auto(self):
+        """C1: Default is 0 (auto), computed at runtime by pipeline_coordinator."""
         config = ParserConfig()
-        assert config.max_workers == 1
+        assert config.max_workers == 0
 
-    def test_default_max_ocr_workers_is_one(self):
+    def test_default_max_ocr_workers_is_auto(self):
+        """C1: Default is 0 (auto), computed at runtime by pipeline_coordinator."""
         config = ParserConfig()
-        assert config.max_ocr_workers == 1
+        assert config.max_ocr_workers == 0
 
     def test_custom_max_workers(self):
         config = ParserConfig(max_workers=4, max_ocr_workers=2)

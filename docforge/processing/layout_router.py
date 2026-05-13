@@ -29,6 +29,32 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_IOU_THRESHOLD = 0.3
 
+# ---- Layout label -> BlockType mapping (C5 expansion) --------------------
+
+# Maps DocLayNet / Surya layout labels to (BlockType, heading_level).
+# Labels not present here are recorded in the label_map side-channel
+# but do NOT override the text block's block_type.
+_LABEL_MAP: dict[str, tuple[BlockType, int]] = {
+    "title": (BlockType.HEADING, 1),
+    "section-header": (BlockType.HEADING, 2),
+    "sectionheader": (BlockType.HEADING, 2),
+    "caption": (BlockType.CAPTION, 0),
+    "footnote": (BlockType.FOOTNOTE, 0),
+    "formula": (BlockType.TEXT, 0),
+    "code": (BlockType.TEXT, 0),
+    "list-item": (BlockType.LIST, 0),
+    "list": (BlockType.LIST, 0),
+    "page-header": (BlockType.PAGE_HEADER, 0),
+    "page-footer": (BlockType.PAGE_FOOTER, 0),
+    "page_header": (BlockType.PAGE_HEADER, 0),
+    "page_footer": (BlockType.PAGE_FOOTER, 0),
+}
+
+
+def _normalize_label(label: str) -> str:
+    """Normalize a layout label for case-insensitive, separator-agnostic lookup."""
+    return label.strip().lower()
+
 
 # ---- Phase 2: Confidence-based Routing Rule Engine -----------------------
 
@@ -167,15 +193,20 @@ def merge_and_label(
             continue
         if tb.block_id:
             label_map[tb.block_id] = label
-        if label == "Title":
-            rebuilt.append(_rebuild(
-                tb,
-                block_type=BlockType.HEADING,
-                heading_level=tb.heading_level if tb.heading_level > 0 else 2,
-            ))
-        elif label == "Caption":
-            rebuilt.append(_rebuild(tb, block_type=BlockType.ITEM, heading_level=0))
+
+        norm = _normalize_label(label)
+        mapping = _LABEL_MAP.get(norm)
+        if mapping is not None:
+            target_type, default_level = mapping
+            # Preserve existing heading_level when it is already set
+            level = (
+                tb.heading_level
+                if tb.heading_level > 0 and target_type == BlockType.HEADING
+                else default_level
+            )
+            rebuilt.append(_rebuild(tb, block_type=target_type, heading_level=level))
         else:
+            # Unknown label: keep block unchanged, recorded in label_map only
             rebuilt.append(tb)
     return rebuilt, label_map
 
@@ -260,6 +291,8 @@ __all__ = [
     "DEFAULT_RULES",
     "RoutingDecision",
     "RoutingRule",
+    "_LABEL_MAP",
+    "_normalize_label",
     "bbox_iou",
     "build_layout_label_map",
     "extract_table_hints",

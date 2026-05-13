@@ -36,6 +36,10 @@ class TestOCRFactory:
             "docforge.usecases.ocr_factory._create_paddleocr", return_value=None
         ), patch(
             "docforge.usecases.ocr_factory._create_apple_vision", return_value=None
+        ), patch(
+            "docforge.usecases.ocr_factory._create_apple_vision_remote", return_value=None
+        ), patch(
+            "docforge.usecases.ocr_factory._create_easyocr", return_value=None
         ):
             engine = create_ocr_engine("auto")
             assert engine.is_available() is False
@@ -53,14 +57,17 @@ class TestOCRFactory:
             engine = create_ocr_engine("auto")
             assert engine is mock_engine
 
-    def test_auto_windows_prefers_paddleocr(self) -> None:
-        """On Windows, PaddleOCR should be tried first."""
+    def test_auto_windows_tries_easyocr_before_paddleocr(self) -> None:
+        """On Windows (non-macOS/non-Linux), EasyOCR is tried before PaddleOCR."""
         mock_engine = MagicMock()
         mock_engine.is_available.return_value = True
 
         with patch("platform.system", return_value="Windows"), patch(
-            "docforge.usecases.ocr_factory._create_paddleocr",
+            "docforge.usecases.ocr_factory._create_easyocr",
             return_value=mock_engine,
+        ), patch(
+            "docforge.usecases.ocr_factory._create_apple_vision_remote",
+            return_value=None,
         ):
             engine = create_ocr_engine("auto")
             assert engine is mock_engine

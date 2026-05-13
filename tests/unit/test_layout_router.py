@@ -71,7 +71,7 @@ class TestMergeLayoutWithText:
         layouts = [_lb("Title", 0, 0, 100, 30)]
         result = merge_layout_with_text(blocks, layouts)
         assert result[0].block_type == BlockType.HEADING
-        assert result[0].heading_level == 2
+        assert result[0].heading_level == 1  # C5: Title -> level 1 (top heading)
 
     def test_existing_heading_level_preserved(self) -> None:
         blocks = [
@@ -81,11 +81,11 @@ class TestMergeLayoutWithText:
         result = merge_layout_with_text(blocks, layouts)
         assert result[0].heading_level == 1
 
-    def test_caption_label_sets_item(self) -> None:
+    def test_caption_label_sets_caption(self) -> None:
         blocks = [_tb("그림 1: 흐름도", 0, 0, 100, 20)]
         layouts = [_lb("Caption", 0, 0, 100, 20)]
         result = merge_layout_with_text(blocks, layouts)
-        assert result[0].block_type == BlockType.ITEM
+        assert result[0].block_type == BlockType.CAPTION  # C5: Caption -> CAPTION (not ITEM)
 
     def test_low_iou_does_not_override(self) -> None:
         blocks = [_tb("text", 0, 0, 10, 10)]

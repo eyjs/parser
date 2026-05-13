@@ -23,6 +23,12 @@ from typing import TYPE_CHECKING
 
 from docforge.domain.models import NoiseStats, PageError
 from docforge.domain.value_objects import DocumentStrategyReport
+from docforge.infrastructure.config import ParserConfig
+from docforge.processing.page_reprocessor import (
+    escalate_strategy,
+    select_best_result,
+    should_reprocess,
+)
 from docforge.usecases.page_processor import PageProcessor, PageResult
 
 if TYPE_CHECKING:
@@ -87,9 +93,15 @@ atexit.register(shutdown_executor)
 class PipelineCoordinator:
     """Coordinates parallel page processing and accumulates failures."""
 
-    def __init__(self, page_processor: PageProcessor, max_workers: int) -> None:
+    def __init__(
+        self,
+        page_processor: PageProcessor,
+        max_workers: int,
+        config: ParserConfig | None = None,
+    ) -> None:
         self._page_processor = page_processor
         self._max_workers = max(1, max_workers)
+        self._config = config
 
     def run(
         self,
@@ -160,4 +172,116 @@ class PipelineCoordinator:
                     logger.warning("on_page_complete callback failed", exc_info=True)
 
         raw_results.sort(key=lambda x: x[0])
-        return [r for _, r in raw_results], page_errors
+        ordered = [r for _, r in raw_results]
+
+        # -- Page reprocessing loop (A4) --
+        ordered = self._reprocess_low_confidence(
+            ordered, pdf_path, total_pages, ocr_semaphore, log_fn,
+            strategy_report, page_errors,
+        )
+
+        return ordered, page_errors
+
+    def _reprocess_low_confidence(
+        self,
+        results: list[PageResult],
+        pdf_path: Path,
+        total_pages: int,
+        ocr_semaphore: threading.Semaphore,
+        log_fn: "Callable[[str], None]",
+        strategy_report: DocumentStrategyReport | None,
+        page_errors: list[PageError],
+    ) -> list[PageResult]:
+        """Retry pages whose confidence is below threshold (A4).
+
+        Runs sequentially (not parallel) to avoid resource contention
+        during the escalated strategy passes. Returns a new list with
+        improved results swapped in where applicable.
+        """
+        config = self._config
+        if config is None or not config.page_reprocess_enabled:
+            return results
+
+        threshold = config.page_reprocess_confidence_threshold
+        max_retries = config.page_reprocess_max_retries
+
+        low_pages = [
+            (idx, r) for idx, r in enumerate(results)
+            if should_reprocess(r, threshold)
+        ]
+        if not low_pages:
+            return results
+
+        logger.info(
+            "Page reprocessor: %d pages below threshold %.2f — retrying (max %d)",
+            len(low_pages), threshold, max_retries,
+        )
+
+        improved = list(results)
+        for page_list_idx, original_result in low_pages:
+            if original_result.page_content is None:
+                continue
+            page_idx = original_result.page_content.page_num - 1  # 0-based
+
+            candidates = [original_result]
+            for attempt in range(1, max_retries + 1):
+                strategy_hints = escalate_strategy(attempt)
+                log_fn(
+                    f"[reprocess] page {page_idx + 1} attempt {attempt}"
+                    f" (force_ocr={strategy_hints.get('force_ocr')})"
+                )
+                try:
+                    page_strategy = None
+                    if strategy_report and page_idx < len(strategy_report.pages):
+                        page_strategy = strategy_report.pages[page_idx]
+
+                    retry_result = self._page_processor.process(
+                        page_idx=page_idx,
+                        pdf_path=pdf_path,
+                        ocr_semaphore=ocr_semaphore,
+                        log_fn=log_fn,
+                        total_pages=total_pages,
+                        page_strategy=page_strategy,
+                    )
+                    candidates.append(retry_result)
+
+                    # Early exit if retry already meets threshold
+                    if (
+                        retry_result.page_content is not None
+                        and retry_result.page_content.confidence is not None
+                        and retry_result.page_content.confidence.overall >= threshold
+                    ):
+                        logger.info(
+                            "Page %d improved to %.3f on attempt %d",
+                            page_idx + 1,
+                            retry_result.page_content.confidence.overall,
+                            attempt,
+                        )
+                        break
+                except Exception as exc:
+                    logger.warning(
+                        "Page %d reprocess attempt %d failed: %s",
+                        page_idx + 1, attempt, exc,
+                        exc_info=True,
+                    )
+
+            best = select_best_result(candidates)
+            if best is not original_result:
+                old_score = (
+                    original_result.page_content.confidence.overall
+                    if original_result.page_content
+                    and original_result.page_content.confidence
+                    else 0.0
+                )
+                new_score = (
+                    best.page_content.confidence.overall
+                    if best.page_content and best.page_content.confidence
+                    else 0.0
+                )
+                logger.info(
+                    "Page %d reprocessed: %.3f -> %.3f",
+                    page_idx + 1, old_score, new_score,
+                )
+            improved[page_list_idx] = best
+
+        return improved

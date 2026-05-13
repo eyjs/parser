@@ -134,8 +134,14 @@ class ParserConfig:
     )
 
     # Parallel processing
-    max_workers: int = 1
-    max_ocr_workers: int = 1
+    # 0 = auto (pipeline_coordinator computes optimal count).
+    # Override via DOCFORGE_MAX_WORKERS / DOCFORGE_MAX_OCR_WORKERS env vars.
+    max_workers: int = field(
+        default_factory=lambda: int(os.environ.get("DOCFORGE_MAX_WORKERS", "0")),
+    )
+    max_ocr_workers: int = field(
+        default_factory=lambda: int(os.environ.get("DOCFORGE_MAX_OCR_WORKERS", "0")),
+    )
 
     # VLM provider selection: "auto" | "local" | "openai" | "anthropic"
     # "auto" tries local Qwen2-VL first, then cloud providers as fallback.
@@ -199,6 +205,12 @@ class ParserConfig:
     # Tighter for legal docs (where layout is dense), looser for academic
     # papers (where captions sit further from figures).
     caption_proximity_pt: float = 100.0
+
+    # Page reprocessing loop (A4): retry low-confidence pages with
+    # escalated strategies (force_ocr, layout_detection_all_pages).
+    page_reprocess_enabled: bool = True
+    page_reprocess_confidence_threshold: float = 0.5
+    page_reprocess_max_retries: int = 2
 
     # Document AST: when True, build an AST from parsed pages and attach
     # it to ParseResult.ast.  The legacy markdown_assembler path is always

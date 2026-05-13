@@ -5,8 +5,8 @@ Supports graceful degradation: if preferred backend is unavailable,
 falls back to the next available one.
 
 Priority order (auto):
-  macOS host:  Apple Vision (local) → PaddleOCR
-  Docker/Linux: Apple Vision (remote via host) → PaddleOCR
+  macOS host:  Apple Vision (local) → EasyOCR → PaddleOCR
+  Docker/Linux: Apple Vision (remote via host) → EasyOCR → PaddleOCR
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_BACKENDS = ("apple_vision", "apple_vision_remote", "paddleocr")
+SUPPORTED_BACKENDS = ("apple_vision", "apple_vision_remote", "easyocr", "paddleocr")
 
 
 def create_ocr_engine(backend: str = "auto") -> Any:
@@ -35,6 +35,7 @@ def create_ocr_engine(backend: str = "auto") -> Any:
     factory_map = {
         "apple_vision": _create_apple_vision,
         "apple_vision_remote": _create_apple_vision_remote,
+        "easyocr": _create_easyocr,
         "paddleocr": _create_paddleocr,
     }
 
@@ -64,11 +65,13 @@ def _create_auto() -> Any:
     if platform.system() == "Darwin":
         order = [
             ("apple_vision", _create_apple_vision),
+            ("easyocr", _create_easyocr),
             ("paddleocr", _create_paddleocr),
         ]
     else:
         order = [
             ("apple_vision_remote", _create_apple_vision_remote),
+            ("easyocr", _create_easyocr),
             ("paddleocr", _create_paddleocr),
         ]
 
@@ -80,6 +83,15 @@ def _create_auto() -> Any:
 
     logger.warning("No OCR backend available — OCR will be skipped for scanned pages")
     return _NullOCREngine()
+
+
+def _create_easyocr() -> Any:
+    """Create EasyOCR engine (cross-platform CPU fallback)."""
+    try:
+        from docforge.adapters.easyocr_engine import EasyOCREngine
+        return EasyOCREngine()
+    except Exception:
+        return None
 
 
 def _create_paddleocr() -> Any:

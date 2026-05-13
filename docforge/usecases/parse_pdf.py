@@ -117,6 +117,7 @@ def parse_pdf(
     coordinator = PipelineCoordinator(
         page_processor=page_processor,
         max_workers=config.max_workers,
+        config=config,
     )
 
     ocr_semaphore = threading.Semaphore(config.max_ocr_workers)
