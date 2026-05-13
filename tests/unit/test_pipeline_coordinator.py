@@ -147,3 +147,166 @@ class TestGlobalExecutorSingleton:
         assert len(results_b) == 3
         assert errors_a == []
         assert errors_b == []
+
+
+# ============================================================================
+# A4 Sprint 7: override_hints is passed through the reprocessing loop
+# ============================================================================
+
+
+class FakeProcessorCapturingHints:
+    """Mock PageProcessor that captures override_hints passed to process()."""
+
+    def __init__(
+        self,
+        initial_confidences: dict[int, float],
+        retry_confidences: dict[int, float] | None = None,
+    ) -> None:
+        from docforge.domain.enums import PageType
+
+        self._initial_conf = initial_confidences
+        self._retry_conf = retry_confidences or {}
+        self._call_counts: dict[int, int] = {}
+        self._captured_hints: list[dict[str, object] | None] = []
+        self._lock = threading.Lock()
+
+    def process(
+        self,
+        page_idx: int,
+        pdf_path: Path,
+        ocr_semaphore: threading.Semaphore,
+        log_fn: Callable[[str], None],
+        total_pages: int,
+        **kwargs,
+    ) -> PageResult:
+        from docforge.domain.enums import PageType
+        from docforge.domain.models import PageConfidence, PageContent
+
+        with self._lock:
+            count = self._call_counts.get(page_idx, 0)
+            self._call_counts[page_idx] = count + 1
+            self._captured_hints.append(kwargs.get("override_hints"))
+
+        if count == 0:
+            conf = self._initial_conf.get(page_idx, 0.9)
+        else:
+            conf = self._retry_conf.get(page_idx, 0.9)
+
+        page_conf = PageConfidence(overall=conf)
+        page_content = PageContent(
+            page_num=page_idx + 1,
+            page_type=PageType.DIGITAL,
+            blocks=(),
+            tables=(),
+            raw_text=f"page {page_idx + 1}",
+            confidence=page_conf,
+        )
+        return PageResult(
+            page_content=page_content, tables_info=None,
+            noise=NoiseStats(), is_toc=False, ocr_used=False,
+        )
+
+
+class TestPipelineCoordinatorOverrideHints:
+    """A4 Sprint 7: verify override_hints is forwarded to process()."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_executor(self):
+        shutdown_executor()
+        yield
+        shutdown_executor()
+
+    def test_initial_call_has_no_override_hints(self) -> None:
+        """First (non-retry) call should not pass override_hints."""
+        from docforge.infrastructure.config import ParserConfig
+
+        proc = FakeProcessorCapturingHints(
+            initial_confidences={0: 0.9},  # above threshold — no retry
+        )
+        config = ParserConfig(
+            page_reprocess_enabled=True,
+            page_reprocess_confidence_threshold=0.5,
+        )
+        coord = PipelineCoordinator(page_processor=proc, max_workers=1, config=config)
+        coord.run(Path("dummy.pdf"), 1, threading.Semaphore(1), _silent)
+
+        # Only 1 call, no override_hints
+        assert len(proc._captured_hints) == 1
+        assert proc._captured_hints[0] is None
+
+    def test_retry_attempt_1_passes_force_ocr(self) -> None:
+        """Retry attempt 1 should pass force_ocr=True, layout_detection_all_pages=False."""
+        from docforge.infrastructure.config import ParserConfig
+
+        proc = FakeProcessorCapturingHints(
+            initial_confidences={0: 0.3},  # below threshold
+            retry_confidences={0: 0.8},     # improved — exits after attempt 1
+        )
+        config = ParserConfig(
+            page_reprocess_enabled=True,
+            page_reprocess_confidence_threshold=0.5,
+            page_reprocess_max_retries=2,
+        )
+        coord = PipelineCoordinator(page_processor=proc, max_workers=1, config=config)
+        coord.run(Path("dummy.pdf"), 1, threading.Semaphore(1), _silent)
+
+        # 2 calls: initial + 1 retry
+        assert proc._call_counts[0] == 2
+        # First call: no override_hints
+        assert proc._captured_hints[0] is None
+        # Second call (attempt 1): force_ocr=True, layout_detection_all_pages=False
+        hints_1 = proc._captured_hints[1]
+        assert hints_1 is not None
+        assert hints_1["force_ocr"] is True
+        assert hints_1["layout_detection_all_pages"] is False
+
+    def test_retry_attempt_2_passes_force_ocr_plus_layout(self) -> None:
+        """Retry attempt 2 should pass force_ocr=True, layout_detection_all_pages=True."""
+        from docforge.infrastructure.config import ParserConfig
+
+        proc = FakeProcessorCapturingHints(
+            initial_confidences={0: 0.3},  # below threshold
+            retry_confidences={0: 0.3},     # stays low — both retries happen
+        )
+        config = ParserConfig(
+            page_reprocess_enabled=True,
+            page_reprocess_confidence_threshold=0.5,
+            page_reprocess_max_retries=2,
+        )
+        coord = PipelineCoordinator(page_processor=proc, max_workers=1, config=config)
+        coord.run(Path("dummy.pdf"), 1, threading.Semaphore(1), _silent)
+
+        # 3 calls: initial + 2 retries
+        assert proc._call_counts[0] == 3
+        # First call: no override_hints
+        assert proc._captured_hints[0] is None
+        # Second call (attempt 1): force_ocr only
+        hints_1 = proc._captured_hints[1]
+        assert hints_1 is not None
+        assert hints_1["force_ocr"] is True
+        assert hints_1["layout_detection_all_pages"] is False
+        # Third call (attempt 2): force_ocr + layout
+        hints_2 = proc._captured_hints[2]
+        assert hints_2 is not None
+        assert hints_2["force_ocr"] is True
+        assert hints_2["layout_detection_all_pages"] is True
+
+    def test_high_confidence_page_no_hints_captured(self) -> None:
+        """Pages above threshold should only have the initial call (no hints)."""
+        from docforge.infrastructure.config import ParserConfig
+
+        proc = FakeProcessorCapturingHints(
+            initial_confidences={0: 0.8, 1: 0.9},
+        )
+        config = ParserConfig(
+            page_reprocess_enabled=True,
+            page_reprocess_confidence_threshold=0.5,
+        )
+        coord = PipelineCoordinator(page_processor=proc, max_workers=1, config=config)
+        coord.run(Path("dummy.pdf"), 2, threading.Semaphore(1), _silent)
+
+        # Each page called once, no override_hints
+        assert proc._call_counts[0] == 1
+        assert proc._call_counts[1] == 1
+        for hint in proc._captured_hints:
+            assert hint is None

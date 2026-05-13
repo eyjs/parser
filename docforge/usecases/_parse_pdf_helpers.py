@@ -57,6 +57,52 @@ def doc_stats(reader, doc, total_pages: int) -> tuple[float, float]:
     return avg_font_size, avg_line_gap
 
 
+def learn_noise_and_stats(
+    reader,
+    doc,
+    total_pages: int,
+    config: ParserConfig,
+) -> tuple["noise_detector.LearnedPatterns", float, float]:
+    """Combined single-pass: learn noise patterns + collect doc stats.
+
+    Replaces two separate full-document scans (``learn_noise`` +
+    ``doc_stats``) with a single iteration over all pages.  For a
+    314-page document this halves the I/O cost.
+
+    Returns:
+        Tuple of (learned_patterns, avg_font_size, avg_line_gap).
+    """
+    pages_data: list[dict[str, object]] = []
+    all_font_sizes: list[float] = []
+    all_gaps: list[float] = []
+    sample_pages = min(10, total_pages)
+
+    for page_idx in range(total_pages):
+        blocks = reader.extract_text_blocks(doc, page_idx)
+        _, page_height = reader.get_page_dimensions(doc, page_idx)
+        lines = [(b.text, b.bbox.center_y, b.font.size) for b in blocks]
+        pages_data.append({"lines": lines, "page_height": page_height})
+
+        # Collect font sizes from all pages (same as get_font_sizes)
+        for b in blocks:
+            if b.font.size > 0:
+                all_font_sizes.append(b.font.size)
+
+        # Collect line gaps from sample pages only
+        if page_idx < sample_pages:
+            all_gaps.extend(reader.get_line_gaps(doc, page_idx))
+
+    patterns = noise_detector.learn_patterns(pages_data, config)
+    avg_font_size = (
+        sum(all_font_sizes) / len(all_font_sizes)
+        if all_font_sizes
+        else 10.0
+    )
+    avg_line_gap = sum(all_gaps) / len(all_gaps) if all_gaps else 5.0
+
+    return patterns, avg_font_size, avg_line_gap
+
+
 def assemble_page_markdowns(parsed_pages, avg_font_size, config, on_page_done):
     page_markdowns: list[str] = []
     for page in parsed_pages:

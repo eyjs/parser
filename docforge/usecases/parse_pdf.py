@@ -86,15 +86,15 @@ def parse_pdf(
 
     use_ocr = force_ocr or ocr_engine.is_available()
 
-    _log("[3/7] Learning noise patterns...")
+    _log("[3/7] Learning noise patterns + document statistics (single pass)...")
     doc = reader.open(pdf_path)
     total_pages = reader.get_page_count(doc)
-    patterns = _h.learn_noise(reader, doc, total_pages, config)
+    patterns, avg_font_size, avg_line_gap = _h.learn_noise_and_stats(
+        reader, doc, total_pages, config,
+    )
     _log(f"       Headers: {len(patterns.header_patterns)}, "
          f"Footers: {len(patterns.footer_patterns)}")
-
-    _log("[4/7] Calculating document statistics...")
-    avg_font_size, avg_line_gap = _h.doc_stats(reader, doc, total_pages)
+    _log(f"       Avg font: {avg_font_size:.1f}, Avg gap: {avg_line_gap:.1f}")
     reader.close(doc)
 
     llm_engine = _h.build_llm_engine(config)

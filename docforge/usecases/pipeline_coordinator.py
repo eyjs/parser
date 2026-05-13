@@ -242,6 +242,7 @@ class PipelineCoordinator:
                         log_fn=log_fn,
                         total_pages=total_pages,
                         page_strategy=page_strategy,
+                        override_hints=strategy_hints,
                     )
                     candidates.append(retry_result)
 

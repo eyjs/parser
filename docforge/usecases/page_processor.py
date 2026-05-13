@@ -120,8 +120,15 @@ class PageProcessor:
         log_fn: "Callable[[str], None]",
         total_pages: int,
         page_strategy: PageStrategy | None = None,
+        override_hints: dict[str, object] | None = None,
     ) -> PageResult:
-        """Process a single page. Opens its own doc/plumber handles."""
+        """Process a single page. Opens its own doc/plumber handles.
+
+        When ``override_hints`` is provided (from the A4 reprocessing
+        loop), the hints override instance-level settings for this call
+        only.  Supported keys: ``"force_ocr"`` (bool),
+        ``"layout_detection_all_pages"`` (bool).
+        """
         from docforge.adapters.image_converter import pil_to_raw_image
 
         config = self._config
@@ -213,8 +220,18 @@ class PageProcessor:
             page_gate_result = None
             page_ocr_used = False
 
+            # A4: resolve override hints as local variables — no instance
+            # mutation.  The reprocessing loop passes escalated hints here.
+            _hints = override_hints or {}
+            effective_force_ocr = self._force_ocr or bool(
+                _hints.get("force_ocr", False),
+            )
+            effective_layout_all = config.layout_detection_all_pages or bool(
+                _hints.get("layout_detection_all_pages", False),
+            )
+
             effective_type = page_type
-            if self._force_ocr and page_type == PageType.DIGITAL:
+            if effective_force_ocr and page_type == PageType.DIGITAL:
                 effective_type = PageType.SCANNED
 
             if effective_type in (PageType.DIGITAL, PageType.MIXED):
@@ -264,6 +281,7 @@ class PageProcessor:
             layout_blocks = self._maybe_detect_layout(
                 reader, doc, page_idx, page_type=effective_type,
                 page_strategy=page_strategy,
+                override_layout_all=effective_layout_all,
             )
 
             if layout_blocks and config.layout_reading_order_enabled:
@@ -484,6 +502,7 @@ class PageProcessor:
         page_idx: int,
         page_type: PageType = PageType.DIGITAL,
         page_strategy: "PageStrategy | None" = None,
+        override_layout_all: bool = False,
     ):
         """Run layout detection if applicable.
 
@@ -520,10 +539,11 @@ class PageProcessor:
             )
         )
 
+        effective_layout_all_pages = config.layout_detection_all_pages or override_layout_all
         if (
             page_type not in (PageType.SCANNED, PageType.MIXED)
             and not strategy_requires_layout
-            and not config.layout_detection_all_pages
+            and not effective_layout_all_pages
         ):
             _logger.debug(
                 "Skipping layout detection for %s page (page_idx=%d)",
