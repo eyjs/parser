@@ -15,6 +15,7 @@ from docforge.domain.enums import PageType
 from docforge.domain.models import TextBlock
 from docforge.infrastructure.config import ParserConfig
 from docforge.processing.text_quality_utils import is_garbled_text as _is_garbled_text
+from docforge.processing.text_quality_utils import is_pua_garbled as _is_pua_garbled
 
 
 # Precompiled TOC patterns for page-level detection
@@ -62,8 +63,21 @@ def classify_page(
     if _is_toc_page(raw_text, config.toc_threshold):
         return PageType.NOISE
 
-    # Garbled text detection — custom font encoding that PyMuPDF can't decode
-    if char_count >= config.min_chars_per_page and _is_garbled_text(raw_text):
+    # Garbled text detection. Two distinct cases:
+    #   (a) PUA / undecodable glyphs — PyMuPDF could not decode the embedded
+    #       font, so the text layer is genuinely unusable. Always needs OCR.
+    #   (b) Korean "fragmentation" heuristic firing on text that WAS cleanly
+    #       decoded. This is unreliable on dense tabular Korean (coverage
+    #       tables, parenthesised insurance terms) and false-positives there.
+    #       Only trust it as SCANNED when the page lacks a substantial clean
+    #       text layer; a text-rich page (>= garble_text_trust_chars cleanly
+    #       decoded chars) is digital regardless of the fuzzy score.
+    if char_count >= config.min_chars_per_page and _is_pua_garbled(raw_text):
+        return PageType.SCANNED
+    if (
+        config.min_chars_per_page <= char_count < config.garble_text_trust_chars
+        and _is_garbled_text(raw_text)
+    ):
         return PageType.SCANNED
 
     # Scanned page (very little text but images present)

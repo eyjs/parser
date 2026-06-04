@@ -6,8 +6,12 @@ import atexit
 import dataclasses
 import logging
 import os
+import queue as _queue
+import shutil
 import tempfile
 import threading
+import time as _time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
@@ -24,7 +28,12 @@ v1_bp = Blueprint("v1", __name__, url_prefix="/v1")
 # Shared executor for synchronous parse requests
 # ---------------------------------------------------------------------------
 
-_SYNC_TIMEOUT = 280  # seconds -- must be < Gunicorn's --timeout (300)
+# Per-request parse budget. Must stay < Gunicorn's --timeout
+# (DOCFORGE_GUNICORN_TIMEOUT, default 1800) so the worker is not killed
+# mid-request. Large born-digital documents (e.g. a 1500-page insurance 약관)
+# legitimately take many minutes, so the old 280s ceiling was far too low.
+# Tunable via DOCFORGE_SYNC_TIMEOUT.
+_SYNC_TIMEOUT = int(os.environ.get("DOCFORGE_SYNC_TIMEOUT", "1740"))  # seconds
 
 _sync_executor: ThreadPoolExecutor | None = None
 _sync_executor_lock = threading.Lock()
@@ -223,6 +232,157 @@ def _handle_excel(file, mime: str) -> tuple[Response, int]:
             "stats": result.stats,
         },
     }), 200
+
+
+# ---------------------------------------------------------------------------
+# Asynchronous parse queue
+# ---------------------------------------------------------------------------
+#
+# Large documents (e.g. a 1500-page insurance 약관) take many minutes to parse.
+# Holding a synchronous HTTP connection open that long is fragile. Instead,
+# callers POST to /v1/parse/async (returns a job_id immediately), the document
+# is queued, and a SINGLE background worker processes the queue one document at
+# a time. Callers poll GET /v1/parse/async/<job_id> for the result.
+#
+# The job store is in-process, so this assumes a single Gunicorn worker
+# (DOCFORGE_WORKERS=1, the default). Finished jobs are kept for
+# DOCFORGE_ASYNC_JOB_TTL seconds so the poller can fetch the result.
+
+_async_jobs: dict[str, dict] = {}
+_async_jobs_lock = threading.Lock()
+_async_queue: "_queue.Queue[tuple[str, str, str]]" = _queue.Queue()
+_async_worker_started = False
+_async_worker_lock = threading.Lock()
+_ASYNC_JOB_TTL = int(os.environ.get("DOCFORGE_ASYNC_JOB_TTL", "3600"))
+
+
+def _cleanup_async_jobs() -> None:
+    now = _time.time()
+    with _async_jobs_lock:
+        stale = [
+            k for k, v in _async_jobs.items()
+            if v.get("ts") and v["status"] in ("done", "failed")
+            and now - v["ts"] > _ASYNC_JOB_TTL
+        ]
+        for k in stale:
+            _async_jobs.pop(k, None)
+
+
+def _parse_by_mime(path: Path, mime: str) -> dict:
+    """Parse a saved file and return the JSON ``data`` payload."""
+    if mime in _CSV_MIME:
+        from docforge.adapters.csv_reader import parse_csv_bytes
+        result = parse_csv_bytes(path.read_bytes(), filename=path.name)
+        return {"markdown": result.markdown, "metadata": result.metadata, "stats": result.stats}
+    if mime in _EXCEL_MIME:
+        from docforge.adapters.excel_reader import parse_excel_bytes
+        result = parse_excel_bytes(path.read_bytes(), filename=path.name)
+        return {"markdown": result.markdown, "metadata": result.metadata, "stats": result.stats}
+    from docforge.usecases.parse_pdf import parse_pdf
+    result = parse_pdf(path)
+    return {
+        "markdown": result.markdown,
+        "metadata": _serialize(result.metadata),
+        "stats": _serialize(result.stats),
+    }
+
+
+def _async_worker_loop() -> None:
+    """Process queued parse jobs one at a time."""
+    while True:
+        job_id, pdf_path, mime = _async_queue.get()
+        path = Path(pdf_path)
+        try:
+            with _async_jobs_lock:
+                if job_id in _async_jobs:
+                    _async_jobs[job_id]["status"] = "processing"
+            data = _parse_by_mime(path, mime)
+            with _async_jobs_lock:
+                _async_jobs[job_id] = {"status": "done", "data": data, "ts": _time.time()}
+        except Exception as exc:  # noqa: BLE001 -- surface any parse failure to poller
+            logger.exception("async parse failed for job %s", job_id)
+            with _async_jobs_lock:
+                _async_jobs[job_id] = {
+                    "status": "failed",
+                    "error": str(exc) or type(exc).__name__,
+                    "ts": _time.time(),
+                }
+        finally:
+            shutil.rmtree(path.parent, ignore_errors=True)
+            _async_queue.task_done()
+            _cleanup_async_jobs()
+
+
+def _ensure_async_worker() -> None:
+    global _async_worker_started
+    if _async_worker_started:
+        return
+    with _async_worker_lock:
+        if _async_worker_started:
+            return
+        threading.Thread(
+            target=_async_worker_loop, name="v1-async-worker", daemon=True,
+        ).start()
+        _async_worker_started = True
+
+
+@v1_bp.route("/parse/async", methods=["POST", "OPTIONS"])
+def parse_async() -> tuple[Response, int]:
+    """Enqueue a document for asynchronous parsing; returns a job_id at once."""
+    if request.method == "OPTIONS":
+        return Response("", status=204)
+    file = request.files.get("file")
+    if file is None or not file.filename:
+        return jsonify({
+            "success": False,
+            "error": {"code": "NO_FILE", "message": "파일이 필요합니다. 'file' 필드로 전송하세요."},
+        }), 400
+
+    mime = (file.content_type or "").split(";")[0].strip().lower()
+    if mime not in _ALLOWED_MIME:
+        allowed = ", ".join(sorted(_ALLOWED_MIME))
+        return jsonify({
+            "success": False,
+            "error": {"code": "UNSUPPORTED_MEDIA_TYPE", "message": f"지원하지 않는 형식: {mime}. 허용: {allowed}"},
+        }), 415
+
+    _ensure_async_worker()
+    job_id = uuid.uuid4().hex
+    tmp_dir = tempfile.mkdtemp(prefix="docforge_async_")
+    saved = Path(tmp_dir) / _safe_filename(file.filename or "upload.pdf")
+    file.save(str(saved))
+
+    with _async_jobs_lock:
+        _async_jobs[job_id] = {"status": "queued", "ts": _time.time()}
+    _async_queue.put((job_id, str(saved), mime))
+
+    return jsonify({
+        "success": True,
+        "data": {"job_id": job_id, "status": "queued", "queue_size": _async_queue.qsize()},
+    }), 202
+
+
+@v1_bp.route("/parse/async/<job_id>", methods=["GET"])
+def parse_async_status(job_id: str) -> tuple[Response, int]:
+    """Poll an async parse job. Returns status and, when done, the result."""
+    with _async_jobs_lock:
+        job = _async_jobs.get(job_id)
+        job = dict(job) if job else None
+    if job is None:
+        return jsonify({
+            "success": False,
+            "error": {"code": "NOT_FOUND", "message": "작업을 찾을 수 없습니다 (만료되었거나 잘못된 ID)."},
+        }), 404
+    status = job["status"]
+    if status == "done":
+        return jsonify({"success": True, "data": {"status": "done", **job["data"]}}), 200
+    if status == "failed":
+        return jsonify({
+            "success": False,
+            "data": {"status": "failed"},
+            "error": {"code": "PARSE_ERROR", "message": job.get("error", "파싱 실패")},
+        }), 200
+    return jsonify({"success": True, "data": {"status": status}}), 200
 
 
 # ---------------------------------------------------------------------------

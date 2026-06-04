@@ -259,7 +259,15 @@ class PageProcessor:
                         if ocr_blocks:
                             page_ocr_used = True
 
-            if effective_type == PageType.MIXED and self._use_ocr:
+            # Skip OCR for MIXED pages whose text layer is already rich: the
+            # image area comes from borders/figures/logos, not text-bearing
+            # images, so OCR would only re-read and discard overlapping blocks
+            # at a large per-page cost. Text-sparse MIXED pages still OCR.
+            skip_mixed_ocr = (
+                effective_type == PageType.MIXED
+                and char_count >= config.mixed_ocr_text_trust_chars
+            )
+            if effective_type == PageType.MIXED and self._use_ocr and not skip_mixed_ocr:
                 with ocr_semaphore:
                     if ocr_engine is None:
                         ocr_engine = create_ocr_engine(config.ocr_backend)
@@ -356,7 +364,25 @@ class PageProcessor:
                 "blocks_fallback_vlm": 0,
                 "avg_block_quality": 1.0,
             }
-            if page_strategy and page_strategy.primary_method != "skip":
+            # Born-digital page guard: when the text layer is cleanly decoded
+            # (no real font-decode failure) and substantial, the per-block OCR
+            # retry only fires on the fuzzy Korean garbled heuristic's
+            # false-positives (dense tabular Korean -- coverage tables,
+            # parenthesised insurance terms). That OCR is pure cost (~seconds/
+            # page) and, in OCR-less environments (e.g. Apple Vision unavailable
+            # in a Linux container), hangs. Trust the text layer and skip the
+            # adaptive-retry OCR loop. Genuine decode failures (PUA / U+FFFD)
+            # have a high pua-garbled ratio and still retry.
+            from docforge.processing.text_quality_utils import is_pua_garbled
+            text_layer_clean = (
+                char_count >= config.mixed_ocr_text_trust_chars
+                and not is_pua_garbled(raw_text)
+            )
+            if (
+                page_strategy
+                and page_strategy.primary_method != "skip"
+                and not text_layer_clean
+            ):
                 merged_blocks, retry_stats = self._adaptive_retry(
                     merged_blocks, page_strategy, page_idx,
                     reader, doc, ocr_semaphore, width, height,

@@ -61,6 +61,21 @@ class ParserConfig:
     image_heavy_ratio: float = 0.5
     image_area_table_hint: float = 0.15
     toc_threshold: float = 0.4
+    # Above this many cleanly-decoded chars the text layer is trusted, so the
+    # fuzzy Korean "fragmentation" garbled score alone will NOT force a page to
+    # SCANNED/OCR. Real font-decode failures (PUA) are still caught separately
+    # regardless of length. Prevents dense tabular Korean (coverage tables,
+    # parenthesised insurance terms) from being misrouted to OCR.
+    garble_text_trust_chars: int = 800
+    # A MIXED page (text + significant image area) normally gets full-page OCR to
+    # recover text embedded inside images. Table/box-heavy born-digital pages
+    # classify MIXED because borders/figures/logos inflate the image area, yet
+    # all their text is already in the text layer -- so the OCR just re-reads and
+    # discards overlapping blocks at ~seconds/page, which makes large documents
+    # (e.g. a 1500-page 약관) intractable. When a MIXED page already carries this
+    # many cleanly-decoded chars, trust the text layer and skip OCR. Set to a
+    # very large number to restore always-OCR behaviour.
+    mixed_ocr_text_trust_chars: int = 800
 
     # Table extraction
     min_table_rows: int = 2
@@ -169,6 +184,10 @@ class ParserConfig:
     # Domain profile selector for text structure recognition.
     # "korean_legal" (default) | "english_academic"
     domain_profile: str = "korean_legal"
+
+    # Expected document language for quality gate and line merger.
+    # "auto" = detect from first pages, "ko" = Korean, "en" = English.
+    expected_language: str = "auto"
 
     # Phase B-1: Layout detection (Surya). On by default since P0-5
     # (borderless table detection requires Surya TABLE hints).

@@ -29,9 +29,16 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 5051
 
-CMD ["gunicorn", "docforge.web.app:create_app()", \
-     "--bind", "0.0.0.0:5051", \
-     "--worker-class", "gthread", \
-     "--threads", "16", \
-     "--workers", "1", \
-     "--timeout", "300"]
+# Gunicorn settings tunable via env. --timeout raised from 300 to 1800 so large
+# born-digital documents (1500-page insurance 약관) are not killed mid-parse; it
+# must stay above DOCFORGE_SYNC_TIMEOUT. Shell-form CMD so ${...} is expanded.
+ENV DOCFORGE_WORKERS=1
+ENV DOCFORGE_THREADS=16
+ENV DOCFORGE_GUNICORN_TIMEOUT=1800
+
+CMD gunicorn "docforge.web.app:create_app()" \
+     --bind 0.0.0.0:5051 \
+     --worker-class gthread \
+     --threads ${DOCFORGE_THREADS} \
+     --workers ${DOCFORGE_WORKERS} \
+     --timeout ${DOCFORGE_GUNICORN_TIMEOUT}

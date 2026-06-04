@@ -8,6 +8,14 @@ for garbled text detection -- duplicate implementations are forbidden.
 from __future__ import annotations
 
 import re
+import unicodedata
+
+_READABLE_CATEGORIES = frozenset({
+    "Lu", "Ll", "Lt", "Lm", "Lo",  # Letters
+    "Nd", "Nl", "No",              # Numbers
+    "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po",  # Punctuation
+    "Sc", "Sk", "Sm", "So",        # Symbols (currency, math, etc.)
+})
 
 
 def _readable_stats(text: str) -> tuple[int, int]:
@@ -23,15 +31,17 @@ def _readable_stats(text: str) -> tuple[int, int]:
             continue
         total_count += 1
         if (
-            '가' <= ch <= '힣'  # Korean syllables
-            or 'ㄱ' <= ch <= 'ㆎ'  # Korean jamo
+            '가' <= ch <= '힣'
+            or 'ㄱ' <= ch <= 'ㆎ'
             or 'A' <= ch <= 'Z'
             or 'a' <= ch <= 'z'
             or '0' <= ch <= '9'
             or ch in '.,;:!?()-/\\[]{}@#$%&*+=<>~`\'"'
-            or '①' <= ch <= '⑳'  # circled numbers
+            or '①' <= ch <= '⑳'
             or ch in '·…―'
         ):
+            readable_count += 1
+        elif unicodedata.category(ch) in _READABLE_CATEGORIES:
             readable_count += 1
     return readable_count, total_count
 
@@ -275,6 +285,38 @@ def _has_korean(text: str) -> bool:
                 or cp in _VOWELS):
             return True
     return False
+
+
+def is_pua_garbled(raw_text: str) -> bool:
+    """Detect text unreadable due to undecodable glyphs (PUA / failed font
+    decoding) -- the *reliable* "needs OCR" signal.
+
+    Unlike :func:`is_garbled_text`, this does NOT apply the fuzzy Korean
+    fragmentation heuristic, so it will not false-positive on cleanly-decoded
+    dense/tabular Korean (coverage tables, parenthesised insurance terms).
+
+    True when either signal fires:
+      * >= 30% of glyphs are decode-failures -- the U+FFFD replacement char or
+        Private-Use-Area (category ``Co``) code points. These are emitted when
+        PyMuPDF cannot map the embedded font, the canonical "needs OCR" case.
+      * the general readable-character ratio falls below 0.3.
+    """
+    stripped = raw_text.strip()
+    if not stripped:
+        return False
+    non_space = [ch for ch in stripped if not ch.isspace()]
+    if not non_space:
+        return False
+    decode_failures = sum(
+        1 for ch in non_space
+        if ch == "�" or unicodedata.category(ch) == "Co"
+    )
+    if decode_failures / len(non_space) >= 0.3:
+        return True
+    readable_count, total_count = _readable_stats(stripped)
+    if total_count == 0:
+        return False
+    return readable_count / total_count < 0.3
 
 
 def is_garbled_text(raw_text: str) -> bool:
