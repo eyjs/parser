@@ -34,6 +34,12 @@ services:
       DOCFORGE_VLM_PROVIDER: ${DOCFORGE_VLM_PROVIDER:-auto}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+      # --- Async parse-job durable store (Step19 / G21) ---
+      # SQLite job store + persisted payloads. Default is an ephemeral /tmp dir
+      # (survives worker restart but NOT container recreation). Pin it to the
+      # persistent `uploads` volume so queued jobs survive a container rebuild too.
+      DOCFORGE_ASYNC_STORE_DIR: ${DOCFORGE_ASYNC_STORE_DIR:-/app/uploads/async_jobs}
     volumes:
       - uploads:/app/uploads
     networks:
