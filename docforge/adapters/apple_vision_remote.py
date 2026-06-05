@@ -14,6 +14,7 @@ import urllib.request
 import urllib.error
 from typing import Any
 
+from docforge.adapters.host_health import TTLAvailability, probe_health
 from docforge.domain.enums import BlockType
 from docforge.domain.models import TextBlock
 from docforge.domain.value_objects import BBox, FontInfo
@@ -32,22 +33,16 @@ class AppleVisionRemoteEngine:
 
     def __init__(self) -> None:
         self._url = _get_service_url().rstrip("/")
-        self._available: bool | None = None
+        # G23: TTL re-probe instead of a permanent cache — a restarted host OCR
+        # service is re-detected on the next call after the TTL elapses, so the
+        # pipeline self-recovers instead of staying False forever.
+        self._availability = TTLAvailability()
+
+    def _probe(self) -> bool:
+        return probe_health(self._url, timeout=3.0)
 
     def is_available(self) -> bool:
-        if self._available is not None:
-            return self._available
-
-        try:
-            req = urllib.request.Request(f"{self._url}/health", method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read())
-                self._available = data.get("status") == "ok"
-        except Exception:
-            logger.debug("Remote OCR service not available at %s", self._url)
-            self._available = False
-
-        return self._available
+        return self._availability.is_available(self._probe)
 
     def recognize(self, image: Any) -> list[TextBlock]:
         if not self.is_available():
@@ -56,6 +51,9 @@ class AppleVisionRemoteEngine:
         try:
             return self._call_remote(image)
         except Exception as exc:
+            # A failed call likely means the host went down mid-use — invalidate
+            # so the next is_available() re-probes immediately (faster recovery).
+            self._availability.invalidate()
             logger.warning("Remote OCR call failed: %s", exc, exc_info=True)
             return []
 
