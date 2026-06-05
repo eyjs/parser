@@ -82,6 +82,8 @@ _ALLOWED_MIME = {
     "text/csv",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.ms-excel",
+    "text/markdown",
+    "text/plain",
 }
 
 _CSV_MIME = {"text/csv"}
@@ -89,6 +91,8 @@ _EXCEL_MIME = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.ms-excel",
 }
+# Markdown/plain text: 파싱 불필요, 텍스트를 그대로 markdown으로 pass-through.
+_MARKDOWN_MIME = {"text/markdown", "text/plain"}
 
 
 @v1_bp.route("/parse/sync", methods=["POST", "OPTIONS"])
@@ -131,6 +135,9 @@ def parse_sync() -> tuple[Response, int]:
 
         if base_mime in _EXCEL_MIME:
             return _handle_excel(file, base_mime)
+
+        if base_mime in _MARKDOWN_MIME:
+            return _handle_markdown(file, base_mime)
 
         # PDF (default)
         return _handle_pdf(file)
@@ -234,6 +241,42 @@ def _handle_excel(file, mime: str) -> tuple[Response, int]:
     }), 200
 
 
+def _decode_text(file_bytes: bytes) -> str:
+    """텍스트 파일 바이트를 디코드한다. UTF-8 우선, 실패 시 cp949/latin-1 폴백."""
+    for encoding in ("utf-8", "utf-8-sig", "cp949"):
+        try:
+            return file_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    # 마지막 폴백: 손실 허용 디코드 (조용히 삼키지 않고 replace로 가시화)
+    return file_bytes.decode("utf-8", errors="replace")
+
+
+def _markdown_payload(file_bytes: bytes, filename: str) -> dict:
+    """markdown/plain 텍스트 → data payload. 파싱 불필요, 섹션 헤더 보존 pass-through."""
+    text = _decode_text(file_bytes)
+    return {
+        "markdown": text,
+        "metadata": {"filename": filename, "format": "markdown"},
+        "stats": {"char_count": len(text), "line_count": text.count("\n") + 1},
+    }
+
+
+def _handle_markdown(file, mime: str) -> tuple[Response, int]:
+    """markdown/plain 텍스트 파일 처리.
+
+    파싱이 불필요한 포맷이므로 텍스트를 그대로 markdown으로 반환한다.
+    섹션 헤더(``#``)는 원문 그대로 보존되어 다운스트림 청크 분할에 활용된다.
+    """
+    file_bytes = file.read()
+    filename = file.filename or "upload.md"
+
+    return jsonify({
+        "success": True,
+        "data": _markdown_payload(file_bytes, filename),
+    }), 200
+
+
 # ---------------------------------------------------------------------------
 # Asynchronous parse queue
 # ---------------------------------------------------------------------------
@@ -278,6 +321,8 @@ def _parse_by_mime(path: Path, mime: str) -> dict:
         from docforge.adapters.excel_reader import parse_excel_bytes
         result = parse_excel_bytes(path.read_bytes(), filename=path.name)
         return {"markdown": result.markdown, "metadata": result.metadata, "stats": result.stats}
+    if mime in _MARKDOWN_MIME:
+        return _markdown_payload(path.read_bytes(), path.name)
     from docforge.usecases.parse_pdf import parse_pdf
     result = parse_pdf(path)
     return {

@@ -177,7 +177,8 @@ class TestParseSync:
         assert data["error"]["code"] == "NO_FILE"
 
     def test_wrong_mime_returns_415(self, client):
-        data = {"file": (io.BytesIO(b"not a pdf"), "test.txt", "text/plain")}
+        # application/zip은 지원 대상이 아님 (text/plain은 Step24에서 허용됨)
+        data = {"file": (io.BytesIO(b"PK\x03\x04binary"), "test.zip", "application/zip")}
         resp = client.post(
             "/v1/parse/sync",
             data=data,
@@ -275,6 +276,57 @@ class TestParseSyncCsv:
             content_type="multipart/form-data",
         )
 
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["data"]["markdown"] == ""
+
+
+class TestParseSyncMarkdown:
+    """Markdown/plain 텍스트 파싱 API 테스트 (Step24)."""
+
+    def test_markdown_parse_success(self, client):
+        md = b"# Title\n\n## Section\n\nbody text with section headers preserved.\n"
+        data = {"file": (io.BytesIO(md), "doc.md", "text/markdown")}
+        resp = client.post(
+            "/v1/parse/sync", data=data, content_type="multipart/form-data",
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        # pass-through: 섹션 헤더(#) 원문 보존
+        assert "# Title" in body["data"]["markdown"]
+        assert "## Section" in body["data"]["markdown"]
+        assert body["data"]["metadata"]["format"] == "markdown"
+        assert body["data"]["stats"]["char_count"] == len(md.decode("utf-8"))
+
+    def test_plain_text_parse_success(self, client):
+        txt = "안녕하세요\n보험 약관 텍스트\n".encode("utf-8")
+        data = {"file": (io.BytesIO(txt), "약관.txt", "text/plain")}
+        resp = client.post(
+            "/v1/parse/sync", data=data, content_type="multipart/form-data",
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["success"] is True
+        assert "보험 약관 텍스트" in body["data"]["markdown"]
+
+    def test_markdown_cp949_fallback(self, client):
+        # UTF-8 디코드 실패 시 cp949 폴백 (한글 레거시 인코딩)
+        txt = "한글 약관".encode("cp949")
+        data = {"file": (io.BytesIO(txt), "legacy.txt", "text/plain")}
+        resp = client.post(
+            "/v1/parse/sync", data=data, content_type="multipart/form-data",
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert "한글 약관" in body["data"]["markdown"]
+
+    def test_markdown_empty_file(self, client):
+        data = {"file": (io.BytesIO(b""), "empty.md", "text/markdown")}
+        resp = client.post(
+            "/v1/parse/sync", data=data, content_type="multipart/form-data",
+        )
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["success"] is True
