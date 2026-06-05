@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from docforge.adapters.host_health import TTLAvailability, probe_health
 from docforge.domain.enums import BlockType
 from docforge.domain.models import TextBlock
 from docforge.domain.value_objects import BBox, FontInfo, RawImage
@@ -37,22 +38,15 @@ class HostVLMEngine:
 
     def __init__(self) -> None:
         self._url = _get_service_url().rstrip("/")
-        self._available: bool | None = None
+        # G23: TTL re-probe instead of a permanent cache — a restarted host VLM
+        # service is re-detected automatically (see host_health.TTLAvailability).
+        self._availability = TTLAvailability()
+
+    def _probe(self) -> bool:
+        return probe_health(self._url, timeout=5.0)
 
     def is_available(self) -> bool:
-        if self._available is not None:
-            return self._available
-
-        try:
-            req = urllib.request.Request(f"{self._url}/health", method="GET")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read())
-                self._available = data.get("status") == "ok"
-        except Exception:
-            logger.debug("Remote VLM service not available at %s", self._url)
-            self._available = False
-
-        return self._available
+        return self._availability.is_available(self._probe)
 
     def correct_page(
         self,
@@ -66,6 +60,8 @@ class HostVLMEngine:
         try:
             return self._call_correct(image, ocr_blocks, prompt_hint)
         except Exception as exc:
+            # Host likely went down mid-use — re-probe on the next call.
+            self._availability.invalidate()
             logger.warning("Remote VLM correct_page failed: %s", exc, exc_info=True)
             return list(ocr_blocks)
 
@@ -84,6 +80,7 @@ class HostVLMEngine:
         try:
             return self._call_describe(image_data, format, prompt_hint, block_type, context_text, bbox_info)
         except Exception as exc:
+            self._availability.invalidate()
             logger.warning("Remote VLM describe_image failed: %s", exc, exc_info=True)
             return ""
 
