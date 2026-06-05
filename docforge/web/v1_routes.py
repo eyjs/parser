@@ -6,8 +6,6 @@ import atexit
 import dataclasses
 import logging
 import os
-import queue as _queue
-import shutil
 import tempfile
 import threading
 import time as _time
@@ -18,6 +16,11 @@ from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request
 
+from docforge.web.job_store import (
+    STATUS_DONE,
+    STATUS_FAILED,
+    ParseJobStore,
+)
 from docforge.web.routes import _safe_filename
 
 logger = logging.getLogger(__name__)
@@ -278,37 +281,53 @@ def _handle_markdown(file, mime: str) -> tuple[Response, int]:
 
 
 # ---------------------------------------------------------------------------
-# Asynchronous parse queue
+# Asynchronous parse queue (durable, SQLite-backed)
 # ---------------------------------------------------------------------------
 #
 # Large documents (e.g. a 1500-page insurance 약관) take many minutes to parse.
 # Holding a synchronous HTTP connection open that long is fragile. Instead,
 # callers POST to /v1/parse/async (returns a job_id immediately), the document
-# is queued, and a SINGLE background worker processes the queue one document at
-# a time. Callers poll GET /v1/parse/async/<job_id> for the result.
+# is persisted to a durable job store, and a background worker claims and
+# processes jobs. Callers poll GET /v1/parse/async/<job_id> for the result.
 #
-# The job store is in-process, so this assumes a single Gunicorn worker
-# (DOCFORGE_WORKERS=1, the default). Finished jobs are kept for
-# DOCFORGE_ASYNC_JOB_TTL seconds so the poller can fetch the result.
+# The job store is SQLite-backed (see job_store.py), so jobs survive a worker
+# or process restart: an interrupted document is recovered on boot and parsed
+# again rather than lost. Job claiming uses an atomic UPDATE under a
+# BEGIN IMMEDIATE transaction, so MULTIPLE workers are safe -- the old
+# DOCFORGE_WORKERS=1 restriction no longer applies. Finished jobs (and their
+# persisted payloads) are pruned DOCFORGE_ASYNC_JOB_TTL seconds after they
+# complete so the poller can still fetch the result in the meantime.
 
-_async_jobs: dict[str, dict] = {}
-_async_jobs_lock = threading.Lock()
-_async_queue: "_queue.Queue[tuple[str, str, str]]" = _queue.Queue()
+_ASYNC_JOB_TTL = int(os.environ.get("DOCFORGE_ASYNC_JOB_TTL", "3600"))
+#: Worker idle poll interval (seconds) when no job is available to claim.
+_ASYNC_POLL_SEC = float(os.environ.get("DOCFORGE_ASYNC_POLL_SEC", "0.5"))
+#: Run TTL cleanup roughly every N worker iterations to bound DB churn.
+_ASYNC_CLEANUP_EVERY = 200
+
+_job_store: ParseJobStore | None = None
+_job_store_lock = threading.Lock()
 _async_worker_started = False
 _async_worker_lock = threading.Lock()
-_ASYNC_JOB_TTL = int(os.environ.get("DOCFORGE_ASYNC_JOB_TTL", "3600"))
 
 
-def _cleanup_async_jobs() -> None:
-    now = _time.time()
-    with _async_jobs_lock:
-        stale = [
-            k for k, v in _async_jobs.items()
-            if v.get("ts") and v["status"] in ("done", "failed")
-            and now - v["ts"] > _ASYNC_JOB_TTL
-        ]
-        for k in stale:
-            _async_jobs.pop(k, None)
+def _async_store_dir() -> Path:
+    """Resolve the durable store directory (DB + persisted payloads)."""
+    configured = os.environ.get("DOCFORGE_ASYNC_STORE_DIR")
+    if configured:
+        return Path(configured)
+    return Path(tempfile.gettempdir()) / "docforge_async_jobs"
+
+
+def _get_job_store() -> ParseJobStore:
+    """Return (or lazily create) the durable parse-job store."""
+    global _job_store
+    if _job_store is not None:
+        return _job_store
+    with _job_store_lock:
+        if _job_store is not None:
+            return _job_store
+        _job_store = ParseJobStore(_async_store_dir())
+        return _job_store
 
 
 def _parse_by_mime(path: Path, mime: str) -> dict:
@@ -333,29 +352,47 @@ def _parse_by_mime(path: Path, mime: str) -> dict:
 
 
 def _async_worker_loop() -> None:
-    """Process queued parse jobs one at a time."""
+    """Claim and process durable parse jobs until the process exits.
+
+    Jobs are claimed atomically from the SQLite store (multi-worker safe).
+    A job that crashes the process mid-parse stays ``processing`` on disk and
+    is requeued by ``recover_orphans`` on the next boot, so no work is lost.
+    The payload file is kept until the TTL cleanup removes the finished job.
+    """
+    store = _get_job_store()
+    iterations = 0
     while True:
-        job_id, pdf_path, mime = _async_queue.get()
-        path = Path(pdf_path)
+        iterations += 1
         try:
-            with _async_jobs_lock:
-                if job_id in _async_jobs:
-                    _async_jobs[job_id]["status"] = "processing"
-            data = _parse_by_mime(path, mime)
-            with _async_jobs_lock:
-                _async_jobs[job_id] = {"status": "done", "data": data, "ts": _time.time()}
+            row = store.claim()
+        except Exception:  # noqa: BLE001 -- a transient DB error must not kill the worker
+            logger.exception("async worker claim failed; backing off")
+            _time.sleep(_ASYNC_POLL_SEC)
+            continue
+
+        if row is None:
+            if iterations % _ASYNC_CLEANUP_EVERY == 0:
+                _safe_cleanup(store)
+            _time.sleep(_ASYNC_POLL_SEC)
+            continue
+
+        try:
+            data = _parse_by_mime(Path(row.payload_path), row.mime)
+            store.mark_done(row.job_id, data)
         except Exception as exc:  # noqa: BLE001 -- surface any parse failure to poller
-            logger.exception("async parse failed for job %s", job_id)
-            with _async_jobs_lock:
-                _async_jobs[job_id] = {
-                    "status": "failed",
-                    "error": str(exc) or type(exc).__name__,
-                    "ts": _time.time(),
-                }
-        finally:
-            shutil.rmtree(path.parent, ignore_errors=True)
-            _async_queue.task_done()
-            _cleanup_async_jobs()
+            logger.exception("async parse failed for job %s", row.job_id)
+            store.mark_failed(row.job_id, str(exc) or type(exc).__name__)
+
+        if iterations % _ASYNC_CLEANUP_EVERY == 0:
+            _safe_cleanup(store)
+
+
+def _safe_cleanup(store: ParseJobStore) -> None:
+    """Best-effort TTL cleanup; never lets a cleanup error stop the worker."""
+    try:
+        store.cleanup_expired(_ASYNC_JOB_TTL)
+    except Exception:  # noqa: BLE001
+        logger.exception("async job TTL cleanup failed")
 
 
 def _ensure_async_worker() -> None:
@@ -365,6 +402,8 @@ def _ensure_async_worker() -> None:
     with _async_worker_lock:
         if _async_worker_started:
             return
+        # Recover jobs left 'processing' by a previous crash before workers run.
+        _get_job_store().recover_orphans()
         threading.Thread(
             target=_async_worker_loop, name="v1-async-worker", daemon=True,
         ).start()
@@ -392,42 +431,53 @@ def parse_async() -> tuple[Response, int]:
         }), 415
 
     _ensure_async_worker()
+    store = _get_job_store()
     job_id = uuid.uuid4().hex
-    tmp_dir = tempfile.mkdtemp(prefix="docforge_async_")
-    saved = Path(tmp_dir) / _safe_filename(file.filename or "upload.pdf")
+
+    # Persist the payload in a durable per-job directory so it survives a
+    # restart and can be re-parsed after orphan recovery. It is removed by the
+    # TTL cleanup once the job finishes -- NOT eagerly after parsing.
+    job_dir = _async_store_dir() / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    saved = job_dir / _safe_filename(file.filename or "upload.pdf")
     file.save(str(saved))
 
-    with _async_jobs_lock:
-        _async_jobs[job_id] = {"status": "queued", "ts": _time.time()}
-    _async_queue.put((job_id, str(saved), mime))
+    store.enqueue(job_id, mime, str(saved))
 
     return jsonify({
         "success": True,
-        "data": {"job_id": job_id, "status": "queued", "queue_size": _async_queue.qsize()},
+        "data": {
+            "job_id": job_id,
+            "status": "queued",
+            "queue_size": store.queued_count(),
+        },
     }), 202
 
 
 @v1_bp.route("/parse/async/<job_id>", methods=["GET"])
 def parse_async_status(job_id: str) -> tuple[Response, int]:
-    """Poll an async parse job. Returns status and, when done, the result."""
-    with _async_jobs_lock:
-        job = _async_jobs.get(job_id)
-        job = dict(job) if job else None
+    """Poll an async parse job. Returns status and, when done, the result.
+
+    Because jobs are durable, a worker restart does NOT make a live job vanish:
+    a 404 here means the id was never seen (typo) or was pruned long after
+    completion. queued/processing/done/failed all return 200.
+    """
+    job = _get_job_store().get(job_id)
     if job is None:
         return jsonify({
             "success": False,
             "error": {"code": "NOT_FOUND", "message": "작업을 찾을 수 없습니다 (만료되었거나 잘못된 ID)."},
         }), 404
-    status = job["status"]
-    if status == "done":
-        return jsonify({"success": True, "data": {"status": "done", **job["data"]}}), 200
-    if status == "failed":
+    if job.status == STATUS_DONE:
+        data = job.result or {}
+        return jsonify({"success": True, "data": {"status": "done", **data}}), 200
+    if job.status == STATUS_FAILED:
         return jsonify({
             "success": False,
             "data": {"status": "failed"},
-            "error": {"code": "PARSE_ERROR", "message": job.get("error", "파싱 실패")},
+            "error": {"code": "PARSE_ERROR", "message": job.error or "파싱 실패"},
         }), 200
-    return jsonify({"success": True, "data": {"status": status}}), 200
+    return jsonify({"success": True, "data": {"status": job.status}}), 200
 
 
 # ---------------------------------------------------------------------------

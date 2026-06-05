@@ -389,3 +389,144 @@ class TestParseSyncExcel:
         # Note: openpyxl may fail on .xls but MIME acceptance should work
         # For this test we just check it's not rejected at MIME level
         assert resp.status_code in (200, 500)  # 200 or parse error, not 415
+
+
+# ---------------------------------------------------------------------------
+# Durable async queue (Step19, G21) -- route level
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def async_store_dir(tmp_path, monkeypatch):
+    """Point the durable async store at a temp dir and reset the singleton.
+
+    The job store is a module-level singleton; reset it before and after each
+    test so cases don't share a DB file.
+    """
+    from docforge.web import v1_routes
+
+    store_dir = tmp_path / "async_store"
+    monkeypatch.setenv("DOCFORGE_ASYNC_STORE_DIR", str(store_dir))
+    # Reset the module singletons so each test gets a fresh store + worker
+    # bound to its own on-disk DB (the worker thread is a module-global).
+    monkeypatch.setattr(v1_routes, "_job_store", None, raising=False)
+    monkeypatch.setattr(v1_routes, "_async_worker_started", False, raising=False)
+    yield store_dir
+    monkeypatch.setattr(v1_routes, "_job_store", None, raising=False)
+    monkeypatch.setattr(v1_routes, "_async_worker_started", False, raising=False)
+
+
+class TestAsyncDurableQueue:
+    """G21: jobs survive a worker restart -- poll stays 200, never 404."""
+
+    def _enqueue(self, client, name="durable.md", mime="text/markdown",
+                 body=b"# durable\n\nhello"):
+        data = {"file": (io.BytesIO(body), name, mime)}
+        return client.post(
+            "/v1/parse/async", data=data, content_type="multipart/form-data",
+        )
+
+    def test_enqueue_returns_202_with_job_id(self, client, async_store_dir):
+        resp = self._enqueue(client)
+        assert resp.status_code == 202
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["data"]["status"] == "queued"
+        assert body["data"]["job_id"]
+
+    def test_enqueue_persists_payload_to_durable_dir(self, client, async_store_dir):
+        resp = self._enqueue(client)
+        job_id = resp.get_json()["data"]["job_id"]
+        # Payload is persisted under <store_dir>/<job_id>/ (NOT eagerly deleted).
+        job_dir = async_store_dir / job_id
+        assert job_dir.exists()
+        assert any(job_dir.iterdir())
+
+    def test_poll_unknown_job_returns_404(self, client, async_store_dir):
+        resp = client.get("/v1/parse/async/does-not-exist")
+        assert resp.status_code == 404
+        assert resp.get_json()["error"]["code"] == "NOT_FOUND"
+
+    def test_job_survives_restart_poll_stays_200(self, client, async_store_dir):
+        """Core G21 contract: enqueue, simulate a worker restart, the job is
+        still there (200, not 404) and is recovered to 'queued'."""
+        from docforge.web import v1_routes
+        from docforge.web.job_store import STATUS_PROCESSING, STATUS_QUEUED
+
+        resp = self._enqueue(client)
+        job_id = resp.get_json()["data"]["job_id"]
+
+        # Simulate a worker that claimed the job and then crashed.
+        store = v1_routes._get_job_store()
+        claimed = store.claim()
+        assert claimed is not None and claimed.job_id == job_id
+        assert store.get(job_id).status == STATUS_PROCESSING
+
+        # "Restart": drop the singleton so the next access rebuilds it from the
+        # same on-disk DB and recovers orphans (as _ensure_async_worker does).
+        v1_routes._job_store = None
+        rebooted = v1_routes._get_job_store()
+        rebooted.recover_orphans()
+
+        # Poll must NOT 404 -- the durable job is still tracked.
+        poll = client.get(f"/v1/parse/async/{job_id}")
+        assert poll.status_code == 200
+        assert poll.get_json()["data"]["status"] == STATUS_QUEUED
+
+    def test_done_job_poll_returns_result(self, client, async_store_dir):
+        from docforge.web import v1_routes
+
+        resp = self._enqueue(client)
+        job_id = resp.get_json()["data"]["job_id"]
+
+        store = v1_routes._get_job_store()
+        store.claim()
+        store.mark_done(job_id, {"markdown": "# parsed", "metadata": {}, "stats": {}})
+
+        poll = client.get(f"/v1/parse/async/{job_id}")
+        assert poll.status_code == 200
+        body = poll.get_json()
+        assert body["success"] is True
+        assert body["data"]["status"] == "done"
+        assert body["data"]["markdown"] == "# parsed"
+
+    def test_failed_job_poll_returns_error(self, client, async_store_dir):
+        from docforge.web import v1_routes
+
+        resp = self._enqueue(client)
+        job_id = resp.get_json()["data"]["job_id"]
+
+        store = v1_routes._get_job_store()
+        store.claim()
+        store.mark_failed(job_id, "boom")
+
+        poll = client.get(f"/v1/parse/async/{job_id}")
+        assert poll.status_code == 200
+        body = poll.get_json()
+        assert body["data"]["status"] == "failed"
+        assert body["error"]["code"] == "PARSE_ERROR"
+
+    def test_worker_processes_markdown_job_end_to_end(self, client, async_store_dir):
+        """Real worker loop: enqueue a markdown doc, the background worker
+        claims and parses it, poll eventually returns done with markdown."""
+        import time as _t
+
+        from docforge.web import v1_routes
+
+        resp = self._enqueue(client, body=b"# Title\n\nbody text")
+        job_id = resp.get_json()["data"]["job_id"]
+
+        # _ensure_async_worker was started by the enqueue route; wait for done.
+        deadline = _t.time() + 5.0
+        status = None
+        while _t.time() < deadline:
+            poll = client.get(f"/v1/parse/async/{job_id}")
+            assert poll.status_code == 200  # never 404 while job is live
+            status = poll.get_json()["data"]["status"]
+            if status == "done":
+                break
+            _t.sleep(0.05)
+
+        assert status == "done", f"worker did not finish job (last status={status})"
+        body = client.get(f"/v1/parse/async/{job_id}").get_json()
+        assert "Title" in body["data"]["markdown"]
