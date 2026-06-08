@@ -40,6 +40,15 @@ services:
       # (survives worker restart but NOT container recreation). Pin it to the
       # persistent `uploads` volume so queued jobs survive a container rebuild too.
       DOCFORGE_ASYNC_STORE_DIR: ${DOCFORGE_ASYNC_STORE_DIR:-/app/uploads/async_jobs}
+
+      # --- Execution-model split (defects A & B) ---
+      # The web process does NOT parse: it only enqueues/polls. A long CPU-bound
+      # parse can no longer hold the GIL and starve HTTP ("Server disconnected").
+      DOCFORGE_INPROC_WORKER: "0"
+      # Backpressure ceiling: when this many jobs are queued, /v1/parse/async
+      # returns 503 + Retry-After (code QUEUE_FULL) so the upstream backs off.
+      DOCFORGE_QUEUE_MAX: ${DOCFORGE_QUEUE_MAX:-16}
+      DOCFORGE_RETRY_AFTER_SEC: ${DOCFORGE_RETRY_AFTER_SEC:-5}
     volumes:
       - uploads:/app/uploads
     networks:
@@ -58,6 +67,45 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    restart: unless-stopped
+
+  # Parse-worker process pool (defects A & B). Same image as `docforge`, but the
+  # command is the `docforge-worker` entrypoint instead of gunicorn. It consumes
+  # the durable SQLite queue (claim -> parse -> mark) in DOCFORGE_PARSE_WORKERS
+  # separate processes, OUTSIDE the web process, so CPU-bound parsing has its own
+  # GIL/cores and cannot starve HTTP submit/poll. It MUST share the same durable
+  # store directory + volume as the web service. Single-node multi-process is the
+  # premise: SQLite WAL + atomic BEGIN IMMEDIATE claim() are safe across multiple
+  # processes on one host (horizontal multi-host fan-out is out of scope).
+  docforge-worker:
+    build: .
+    container_name: docforge-worker
+    command: ["docforge-worker"]
+    depends_on:
+      - docforge
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Host OCR/VLM access mirrors the web service (parsing calls them).
+      DOCFORGE_OCR_SERVICE_URL: ${DOCFORGE_OCR_SERVICE_URL:-http://host.docker.internal:5052}
+      DOCFORGE_VLM_PROVIDER: ${DOCFORGE_VLM_PROVIDER:-auto}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # SAME durable store as the web service -- this is how the two processes
+      # share the queue. Must match the `docforge` service value exactly.
+      DOCFORGE_ASYNC_STORE_DIR: ${DOCFORGE_ASYNC_STORE_DIR:-/app/uploads/async_jobs}
+      # Document-level parse concurrency (process count). 0/blank => auto-resolved.
+      DOCFORGE_PARSE_WORKERS: ${DOCFORGE_PARSE_WORKERS:-4}
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - kms-aip-shared
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 512M
     restart: unless-stopped
 
 networks:

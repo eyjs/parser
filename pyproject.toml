@@ -56,6 +56,7 @@ all = [
 [project.scripts]
 docforge = "docforge.cli:main"
 docforge-gui = "docforge.launcher:main"
+docforge-worker = "docforge.web.worker_main:main"
 
 [tool.setuptools.packages.find]
 include = ["docforge*"]

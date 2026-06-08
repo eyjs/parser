@@ -8,7 +8,6 @@ import logging
 import os
 import tempfile
 import threading
-import time as _time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -16,6 +15,8 @@ from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request
 
+from docforge.web import async_worker
+from docforge.web.async_worker import async_store_dir as _async_store_dir
 from docforge.web.job_store import (
     STATUS_DONE,
     STATUS_FAILED,
@@ -298,24 +299,10 @@ def _handle_markdown(file, mime: str) -> tuple[Response, int]:
 # persisted payloads) are pruned DOCFORGE_ASYNC_JOB_TTL seconds after they
 # complete so the poller can still fetch the result in the meantime.
 
-_ASYNC_JOB_TTL = int(os.environ.get("DOCFORGE_ASYNC_JOB_TTL", "3600"))
-#: Worker idle poll interval (seconds) when no job is available to claim.
-_ASYNC_POLL_SEC = float(os.environ.get("DOCFORGE_ASYNC_POLL_SEC", "0.5"))
-#: Run TTL cleanup roughly every N worker iterations to bound DB churn.
-_ASYNC_CLEANUP_EVERY = 200
-
 _job_store: ParseJobStore | None = None
 _job_store_lock = threading.Lock()
 _async_worker_started = False
 _async_worker_lock = threading.Lock()
-
-
-def _async_store_dir() -> Path:
-    """Resolve the durable store directory (DB + persisted payloads)."""
-    configured = os.environ.get("DOCFORGE_ASYNC_STORE_DIR")
-    if configured:
-        return Path(configured)
-    return Path(tempfile.gettempdir()) / "docforge_async_jobs"
 
 
 def _get_job_store() -> ParseJobStore:
@@ -352,52 +339,29 @@ def _parse_by_mime(path: Path, mime: str) -> dict:
 
 
 def _async_worker_loop() -> None:
-    """Claim and process durable parse jobs until the process exits.
+    """Run the shared consumer loop in this (web) process forever.
 
-    Jobs are claimed atomically from the SQLite store (multi-worker safe).
-    A job that crashes the process mid-parse stays ``processing`` on disk and
-    is requeued by ``recover_orphans`` on the next boot, so no work is lost.
-    The payload file is kept until the TTL cleanup removes the finished job.
+    Retained for the in-proc dev fallback (``DOCFORGE_INPROC_WORKER=1``). The
+    canonical consumer is now a SEPARATE process (``docforge-worker``); see
+    ``async_worker.run_worker_loop`` and ``worker_main``. Parsing behaviour is
+    unchanged -- only *where* the loop runs differs.
     """
-    store = _get_job_store()
-    iterations = 0
-    while True:
-        iterations += 1
-        try:
-            row = store.claim()
-        except Exception:  # noqa: BLE001 -- a transient DB error must not kill the worker
-            logger.exception("async worker claim failed; backing off")
-            _time.sleep(_ASYNC_POLL_SEC)
-            continue
-
-        if row is None:
-            if iterations % _ASYNC_CLEANUP_EVERY == 0:
-                _safe_cleanup(store)
-            _time.sleep(_ASYNC_POLL_SEC)
-            continue
-
-        try:
-            data = _parse_by_mime(Path(row.payload_path), row.mime)
-            store.mark_done(row.job_id, data)
-        except Exception as exc:  # noqa: BLE001 -- surface any parse failure to poller
-            logger.exception("async parse failed for job %s", row.job_id)
-            store.mark_failed(row.job_id, str(exc) or type(exc).__name__)
-
-        if iterations % _ASYNC_CLEANUP_EVERY == 0:
-            _safe_cleanup(store)
-
-
-def _safe_cleanup(store: ParseJobStore) -> None:
-    """Best-effort TTL cleanup; never lets a cleanup error stop the worker."""
-    try:
-        store.cleanup_expired(_ASYNC_JOB_TTL)
-    except Exception:  # noqa: BLE001
-        logger.exception("async job TTL cleanup failed")
+    async_worker.run_worker_loop(_get_job_store(), _parse_by_mime)
 
 
 def _ensure_async_worker() -> None:
+    """Start the in-proc worker thread ONLY when the dev fallback is enabled.
+
+    By default (``DOCFORGE_INPROC_WORKER=0``) the web process does NOT spawn a
+    parse worker: parsing is owned by the separate ``docforge-worker`` process
+    so a CPU-bound parse cannot starve gunicorn's HTTP threads (defect A). The
+    web process then only enqueues and polls. Setting ``DOCFORGE_INPROC_WORKER=1``
+    restores the legacy single-thread behaviour for local development.
+    """
     global _async_worker_started
     if _async_worker_started:
+        return
+    if not async_worker.inproc_worker_enabled():
         return
     with _async_worker_lock:
         if _async_worker_started:
@@ -432,6 +396,28 @@ def parse_async() -> tuple[Response, int]:
 
     _ensure_async_worker()
     store = _get_job_store()
+
+    # Backpressure (defect B): when the queue is saturated, reject new work with
+    # 503 + Retry-After instead of growing the queue without bound. The upstream
+    # (ai-platform docforge_client) treats this exact 503/QUEUE_FULL/Retry-After
+    # contract as a clear back-off signal -- removing the old ambiguity where a
+    # dropped connection looked like a hard failure and triggered a thundering
+    # herd of retries. We check the *queued* (not-yet-claimed) depth only.
+    if store.queued_count() >= async_worker.queue_max():
+        retry_after = async_worker.retry_after_sec()
+        resp = jsonify({
+            "success": False,
+            "error": {
+                "code": "QUEUE_FULL",
+                "message": (
+                    "파싱 큐가 가득 찼습니다. 잠시 후 다시 시도하세요 "
+                    f"(Retry-After: {retry_after}s)."
+                ),
+            },
+        })
+        resp.headers["Retry-After"] = str(retry_after)
+        return resp, 503
+
     job_id = uuid.uuid4().hex
 
     # Persist the payload in a durable per-job directory so it survives a
