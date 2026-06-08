@@ -29,6 +29,11 @@ _CID_PATTERN = re.compile(r"\(cid:\s*\d+\s*\)")
 _STATUS_NOISE_RE = re.compile(r"^\s*상태\s*OK\s*$", re.IGNORECASE)
 _MOJIBAKE_HINT = re.compile(r"[\xc0-\xff]")
 _KOREAN_RE = re.compile(r"[가-힣]")
+# Strong mojibake signature: a UTF-8 lead byte (Â/Ã) mis-decoded as latin1/cp1252
+# is followed by a continuation byte (U+0080–U+00BF). Legit accented text in other
+# languages (café, Müller, naïve) has isolated accents without this Â/Ã prefix, so
+# this distinguishes true garble from valid non-Korean text.
+_MOJIBAKE_ARTIFACT = re.compile(r"[\xc2\xc3][\x80-\xbf]")
 _ENCODING_PAIRS: list[tuple[str, str]] = [
     ("latin1", "utf-8"),
     ("cp1252", "utf-8"),
@@ -80,7 +85,6 @@ def _try_byte_repair(text: str) -> str | None:
                 continue
             if (
                 len(candidate) >= len(text) * 0.2
-                and _KOREAN_RE.search(candidate)
                 and not _MOJIBAKE_HINT.search(candidate)
             ):
                 return candidate.strip()
@@ -103,14 +107,15 @@ def _repair_text(text: str) -> str:
                 continue
             if (
                 len(candidate) >= len(text) * 0.2
-                and _KOREAN_RE.search(candidate)
                 and not _MOJIBAKE_HINT.search(candidate)
             ):
                 return candidate.strip()
         repaired = _try_byte_repair(text)
         if repaired is not None:
             return repaired
-        if not _KOREAN_RE.search(text):
+        # Repair failed. Strip only unrecoverable mojibake (Â/Ã artifacts);
+        # keep legit accented non-Korean text that merely tripped _MOJIBAKE_HINT.
+        if _MOJIBAKE_ARTIFACT.search(text):
             return ""
     return text
 
@@ -136,18 +141,25 @@ def _convert_unicode_bullets(text: str) -> str:
     return text
 
 
-def _is_junk_table(grid: list[list[str]]) -> bool:
+def _is_junk_table(grid: list[list[str]], *, source: str = "") -> bool:
     """Detect tables that are TOC leader-dot tables or mostly empty."""
+    if source == "vlm":
+        return False
     total_cells = 0
     empty_or_dots = 0
+    content_length = 0
     for row in grid:
         for cell in row:
             total_cells += 1
             if not cell or _LEADER_DOTS_ONLY_RE.match(cell):
                 empty_or_dots += 1
+            else:
+                content_length += len(cell)
     if total_cells == 0:
         return True
-    return (empty_or_dots / total_cells) > 0.5
+    if content_length > 50:
+        return False
+    return (empty_or_dots / total_cells) > 0.75
 
 
 def _table_to_text(grid: list[list[str]]) -> str:
@@ -310,7 +322,7 @@ def table_to_markdown(table: Table) -> str:
                 for c in range(cell.col, col_end):
                     grid[r][c] = cleaned
 
-    if _is_junk_table(grid):
+    if _is_junk_table(grid, source=table.source):
         return _table_to_text(grid)
 
     lines: list[str] = []

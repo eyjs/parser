@@ -71,3 +71,7 @@ test_apple_vision_ocr.md
 
 # One-off scripts
 test_ocr_check.py
+
+# 런타임 로그 (커밋 금지)
+vlm_service.log
+*.log

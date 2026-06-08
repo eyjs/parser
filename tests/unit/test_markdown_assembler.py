@@ -805,6 +805,20 @@ class TestRepairTextFunction:
         result = _repair_text(garbled)
         assert result == ""
 
+    def test_legit_non_korean_accents_preserved(self) -> None:
+        """다국어: 정상 악센트/CJK 비한국어 텍스트는 모지바케로 오인해 버리지 않는다.
+
+        과거엔 한국어가 없으면 통째로 버렸으나, 이제는 Â/Ã UTF-8 잔재(진짜
+        모지바케)가 있을 때만 버린다. café·Müller·中文 등은 보존돼야 한다.
+        """
+        for text in ("café résumé Müller", "naïve coördinate", "正常な中文", "plain english"):
+            assert _repair_text(text) == text, f"정상 비한국어가 버려짐: {text!r}"
+
+    def test_true_mojibake_stripped_regardless_of_language(self) -> None:
+        """Â/Ã 잔재가 있는 복구 불가 모지바케는 언어 무관하게 버린다."""
+        for garbled in ("Ã«Â³Â¸Ã­Â", "Ã©tÃ© Ã  la"):
+            assert _repair_text(garbled) == "", f"모지바케가 새어듦: {garbled!r}"
+
     def test_status_ok_noise_removed(self) -> None:
         assert _repair_text("상태 OK") == ""
         assert _repair_text("  상태  OK  ") == ""

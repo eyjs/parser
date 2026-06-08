@@ -211,6 +211,7 @@ class DocumentStrategyReport:
     strategy_counts: dict[str, int]  # {"pymupdf_text": 277, ...}
     surya_page_count: int
     generated_at: str  # ISO 8601
+    detected_language: str = "ko"  # ISO 639-1: "ko", "en", "zh", etc.
 
     def to_dict(self) -> dict:
         """Serialise for SSE / console reporting."""
@@ -219,6 +220,7 @@ class DocumentStrategyReport:
             "strategy_counts": dict(self.strategy_counts),
             "surya_page_count": self.surya_page_count,
             "generated_at": self.generated_at,
+            "detected_language": self.detected_language,
             "pages": [
                 {
                     "page_index": p.page_index,

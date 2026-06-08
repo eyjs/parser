@@ -48,6 +48,7 @@ class DocumentIntelligence:
         -- never ``get_pixmap()`` -- so the scan stays fast.
         """
         strategies: list[PageStrategy] = []
+        sample_texts: list[str] = []
         for page_idx in range(len(doc)):
             page = doc[page_idx]
             try:
@@ -67,8 +68,18 @@ class DocumentIntelligence:
                     estimated_complexity="simple",
                 )
             strategies.append(strategy)
+            if page_idx < 5:
+                # Language sampling is best-effort; a page that fails to yield
+                # text must not abort the whole strategy scan.
+                try:
+                    raw = page.get_text().strip()
+                    if raw:
+                        sample_texts.append(raw[:500])
+                except Exception:
+                    pass
 
-        return self._build_report(strategies)
+        detected_lang = _detect_language(sample_texts)
+        return self._build_report(strategies, detected_lang)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -130,7 +141,9 @@ class DocumentIntelligence:
         )
 
     def _build_report(
-        self, strategies: list[PageStrategy],
+        self,
+        strategies: list[PageStrategy],
+        detected_language: str = "ko",
     ) -> DocumentStrategyReport:
         """Aggregate page strategies into a report."""
         strategy_counts: dict[str, int] = {}
@@ -148,12 +161,45 @@ class DocumentIntelligence:
             strategy_counts=strategy_counts,
             surya_page_count=surya_count,
             generated_at=datetime.now().isoformat(),
+            detected_language=detected_language,
         )
 
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+
+def _detect_language(sample_texts: list[str]) -> str:
+    """Detect dominant language from sample page texts via character distribution."""
+    hangul = 0
+    ascii_alpha = 0
+    cjk = 0
+    total = 0
+    for text in sample_texts:
+        for ch in text:
+            if ch.isspace():
+                continue
+            total += 1
+            cp = ord(ch)
+            if 0xAC00 <= cp <= 0xD7A3 or 0x3131 <= cp <= 0x318E:
+                hangul += 1
+            elif 0x41 <= cp <= 0x5A or 0x61 <= cp <= 0x7A:
+                ascii_alpha += 1
+            elif 0x4E00 <= cp <= 0x9FFF:
+                cjk += 1
+    if total == 0:
+        return "ko"
+    hangul_r = hangul / total
+    ascii_r = ascii_alpha / total
+    cjk_r = cjk / total
+    if hangul_r > 0.15:
+        return "ko"
+    if cjk_r > 0.15:
+        return "zh"
+    if ascii_r > 0.3:
+        return "en"
+    return "ko"
 
 
 def _is_font_homogeneous(text_dict: dict) -> bool:
