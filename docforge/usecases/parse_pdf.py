@@ -20,6 +20,7 @@ is owned by :class:`PipelineCoordinator`. Internal helpers live in
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -46,6 +47,20 @@ logger = logging.getLogger(__name__)
 
 # Backward-compatible alias — older imports referenced ``_PageResult``.
 _PageResult = PageResult
+
+
+def _resolve_ocr_workers(max_ocr_workers: int) -> int:
+    """OCR 세마포어 permit 수를 해석한다.
+
+    ``config.max_ocr_workers`` 0 = "auto"(config.py 주석)인데, 0을 그대로
+    ``Semaphore(0)``으로 쓰면 OCR이 필요한 첫 SCANNED 페이지의 acquire가 영구
+    블록돼 파싱이 데드락된다(max_workers는 coordinator가 0→auto 해석하지만 OCR
+    세마포어 경로는 누락돼 있었음). 0/음수면 CPU 기반의 보수적 기본값으로 해석한다
+    — OCR은 호스트 서비스를 치므로 동시성을 작게 둔다.
+    """
+    if max_ocr_workers > 0:
+        return max_ocr_workers
+    return max(2, min(os.cpu_count() or 2, 4))
 
 
 def parse_pdf(
@@ -120,7 +135,7 @@ def parse_pdf(
         config=config,
     )
 
-    ocr_semaphore = threading.Semaphore(config.max_ocr_workers)
+    ocr_semaphore = threading.Semaphore(_resolve_ocr_workers(config.max_ocr_workers))
 
     # Per-page early markdown emit — lets the SSE/dashboard render each
     # page as soon as it finishes parsing instead of waiting for [7/7].
