@@ -36,6 +36,24 @@ ENV DOCFORGE_WORKERS=1
 ENV DOCFORGE_THREADS=16
 ENV DOCFORGE_GUNICORN_TIMEOUT=1800
 
+# Execution-model split (defects A & B). CPU-bound async parsing now runs in a
+# SEPARATE process pool (the `docforge-worker` entrypoint / compose service),
+# NOT inside this gunicorn web process -- a long parse can no longer hold the
+# GIL and starve HTTP submit/poll ("Server disconnected"). The web process only
+# enqueues and polls, so DOCFORGE_INPROC_WORKER defaults to 0 here. The worker
+# service shares the SAME image and the SAME DOCFORGE_ASYNC_STORE_DIR volume;
+# single-node multi-process is the premise (SQLite WAL + atomic claim are safe
+# across processes on one host). DOCFORGE_PARSE_WORKERS sizes that pool and
+# DOCFORGE_QUEUE_MAX is the backpressure ceiling (503 + Retry-After on overflow).
+ENV DOCFORGE_INPROC_WORKER=0
+ENV DOCFORGE_PARSE_WORKERS=4
+ENV DOCFORGE_QUEUE_MAX=16
+ENV DOCFORGE_RETRY_AFTER_SEC=5
+
+# This image serves BOTH roles by overriding the command:
+#   - web    (default CMD below): gunicorn HTTP server, enqueue/poll only
+#   - worker (compose `docforge-worker` service): command `docforge-worker`,
+#            the parse-worker process pool that consumes the durable queue.
 CMD gunicorn "docforge.web.app:create_app()" \
      --bind 0.0.0.0:5051 \
      --worker-class gthread \

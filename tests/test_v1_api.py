@@ -506,12 +506,22 @@ class TestAsyncDurableQueue:
         assert body["data"]["status"] == "failed"
         assert body["error"]["code"] == "PARSE_ERROR"
 
-    def test_worker_processes_markdown_job_end_to_end(self, client, async_store_dir):
+    def test_worker_processes_markdown_job_end_to_end(
+        self, client, async_store_dir, monkeypatch,
+    ):
         """Real worker loop: enqueue a markdown doc, the background worker
-        claims and parses it, poll eventually returns done with markdown."""
+        claims and parses it, poll eventually returns done with markdown.
+
+        The web process no longer spawns a parse worker by default (parsing is
+        owned by the separate ``docforge-worker`` process). Opt into the in-proc
+        dev fallback here so this end-to-end contract still exercises real
+        processing through the enqueue route.
+        """
         import time as _t
 
         from docforge.web import v1_routes
+
+        monkeypatch.setenv("DOCFORGE_INPROC_WORKER", "1")
 
         resp = self._enqueue(client, body=b"# Title\n\nbody text")
         job_id = resp.get_json()["data"]["job_id"]
