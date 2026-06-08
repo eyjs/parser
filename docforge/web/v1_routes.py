@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import dataclasses
+import hashlib
 import logging
 import os
 import tempfile
@@ -20,6 +21,8 @@ from docforge.web.async_worker import async_store_dir as _async_store_dir
 from docforge.web.job_store import (
     STATUS_DONE,
     STATUS_FAILED,
+    STATUS_PROCESSING,
+    STATUS_QUEUED,
     ParseJobStore,
 )
 from docforge.web.routes import _safe_filename
@@ -67,12 +70,40 @@ def _get_sync_executor() -> ThreadPoolExecutor:
 
 @v1_bp.route("/health", methods=["GET"])
 def health() -> tuple[Response, int]:
-    """Health check endpoint for ProviderFactory startup verification."""
+    """Health check endpoint for ProviderFactory startup verification.
+
+    Includes lightweight queue observability (P2-2): ``queue_depth`` (queued),
+    ``in_flight`` (processing) and the per-status ``queue`` breakdown so an
+    operator (or the upstream) can see saturation without a separate call. The
+    counts come from a single ``GROUP BY`` and never make ``/health`` fail --
+    any store error degrades to omitting the metrics, not a non-200.
+    """
+    data: dict = {"status": "ok", "version": "1.0.0"}
+    try:
+        counts = _get_job_store().counts()
+        data["queue_depth"] = counts[STATUS_QUEUED]
+        data["in_flight"] = counts[STATUS_PROCESSING]
+        data["queue"] = counts
+    except Exception:  # noqa: BLE001 -- health must stay 200 even if metrics fail
+        logger.exception("queue metrics unavailable for /v1/health")
+    return jsonify({"success": True, "data": data}), 200
+
+
+@v1_bp.route("/metrics", methods=["GET"])
+def metrics() -> tuple[Response, int]:
+    """Queue metrics for observability (P2-2): depth, in-flight, per-status.
+
+    Separate from ``/health`` so monitoring can scrape it directly. ``queue`` is
+    the per-status breakdown (queued/processing/done/failed); ``queue_depth`` and
+    ``in_flight`` surface the two operationally important numbers up top.
+    """
+    counts = _get_job_store().counts()
     return jsonify({
         "success": True,
         "data": {
-            "status": "ok",
-            "version": "1.0.0",
+            "queue_depth": counts[STATUS_QUEUED],
+            "in_flight": counts[STATUS_PROCESSING],
+            "queue": counts,
         },
     }), 200
 
@@ -418,6 +449,28 @@ def parse_async() -> tuple[Response, int]:
         resp.headers["Retry-After"] = str(retry_after)
         return resp, 503
 
+    # Content idempotency (defect C): hash the uploaded bytes so a duplicate
+    # submission of the same file (upstream retry, orphan recovery, thundering
+    # herd) attaches to the existing in-flight job instead of spawning a
+    # redundant parse that could overwrite a good result with an empty one. We
+    # read the bytes once for both the hash and the durable write.
+    file_bytes = file.read()
+    content_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    # Short-circuit before allocating a job dir / writing the payload when an
+    # identical job is already queued or processing.
+    existing = store.find_active_by_hash(content_hash, mime)
+    if existing is not None:
+        return jsonify({
+            "success": True,
+            "data": {
+                "job_id": existing.job_id,
+                "status": existing.status,
+                "queue_size": store.queued_count(),
+                "deduplicated": True,
+            },
+        }), 202
+
     job_id = uuid.uuid4().hex
 
     # Persist the payload in a durable per-job directory so it survives a
@@ -426,16 +479,25 @@ def parse_async() -> tuple[Response, int]:
     job_dir = _async_store_dir() / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     saved = job_dir / _safe_filename(file.filename or "upload.pdf")
-    file.save(str(saved))
+    saved.write_bytes(file_bytes)
 
-    store.enqueue(job_id, mime, str(saved))
+    # Atomic dedup-or-insert: if a concurrent request inserted the same content
+    # between our pre-check and here, we attach to that job (and drop the dir we
+    # just created) instead of inserting a duplicate.
+    effective_id, deduplicated = store.enqueue_idempotent(
+        job_id, mime, str(saved), content_hash,
+    )
+    if deduplicated and effective_id != job_id:
+        import shutil
+        shutil.rmtree(job_dir, ignore_errors=True)
 
     return jsonify({
         "success": True,
         "data": {
-            "job_id": job_id,
+            "job_id": effective_id,
             "status": "queued",
             "queue_size": store.queued_count(),
+            "deduplicated": deduplicated,
         },
     }), 202
 

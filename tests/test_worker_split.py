@@ -118,12 +118,14 @@ class TestBackpressure:
         monkeypatch.setenv("DOCFORGE_QUEUE_MAX", "2")
         monkeypatch.setenv("DOCFORGE_RETRY_AFTER_SEC", "7")
 
-        # Fill the queue to the ceiling (2 queued jobs).
-        assert _enqueue(client, name="a.md").status_code == 202
-        assert _enqueue(client, name="b.md").status_code == 202
+        # Fill the queue to the ceiling (2 queued jobs). Distinct bodies so each
+        # is a separate document -- content idempotency (P1-1) dedups identical
+        # bytes, which is orthogonal to backpressure (distinct work filling up).
+        assert _enqueue(client, name="a.md", body=b"# a\n\nalpha").status_code == 202
+        assert _enqueue(client, name="b.md", body=b"# b\n\nbravo").status_code == 202
 
         # The next submit must be rejected with backpressure.
-        resp = _enqueue(client, name="c.md")
+        resp = _enqueue(client, name="c.md", body=b"# c\n\ncharlie")
         assert resp.status_code == 503
         assert resp.headers.get("Retry-After") == "7"
         body = resp.get_json()
@@ -137,8 +139,10 @@ class TestBackpressure:
         below the ceiling it is accepted."""
         monkeypatch.setenv("DOCFORGE_QUEUE_MAX", "3")
         for i in range(3):
-            assert _enqueue(client, name=f"{i}.md").status_code == 202
-        assert _enqueue(client, name="over.md").status_code == 503
+            # Distinct bodies per slot (idempotency dedups identical bytes).
+            body = f"# doc {i}\n\nbody {i}".encode()
+            assert _enqueue(client, name=f"{i}.md", body=body).status_code == 202
+        assert _enqueue(client, name="over.md", body=b"# over\n\nover").status_code == 503
 
 
 # ---------------------------------------------------------------------------
