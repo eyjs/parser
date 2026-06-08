@@ -44,6 +44,14 @@ _DEFAULT_PROBE_TTL_SEC = 30.0
 #: Default background health poll interval (seconds).
 _DEFAULT_POLL_INTERVAL_SEC = 15.0
 
+#: Circuit-breaker defaults (P2-1). Conservative so a healthy host is never
+#: tripped: it takes ``N`` *consecutive* probe failures to open, then the host
+#: is skipped for ``cooldown`` seconds (graceful, zero-block) before a single
+#: half-open re-probe decides recovery. A single transient failure (the common
+#: case, e.g. one slow request) never opens the circuit.
+_DEFAULT_CB_THRESHOLD = 3
+_DEFAULT_CB_COOLDOWN_SEC = 30.0
+
 
 def get_probe_ttl_sec() -> float:
     """Re-probe TTL for availability caches (env ``DOCFORGE_HOST_PROBE_TTL_SEC``)."""
@@ -81,6 +89,42 @@ def get_poll_interval_sec() -> float:
     return value if value > 0 else _DEFAULT_POLL_INTERVAL_SEC
 
 
+def get_cb_threshold() -> int:
+    """Consecutive failures that open the circuit (env ``DOCFORGE_HOST_CB_THRESHOLD``)."""
+    raw = os.environ.get("DOCFORGE_HOST_CB_THRESHOLD")
+    if not raw:
+        return _DEFAULT_CB_THRESHOLD
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "invalid DOCFORGE_HOST_CB_THRESHOLD=%r, using default %d",
+            raw,
+            _DEFAULT_CB_THRESHOLD,
+        )
+        return _DEFAULT_CB_THRESHOLD
+    # A threshold < 1 would open on the first (or zeroth) failure, defeating the
+    # "conservative" contract; clamp up to the default floor.
+    return value if value >= 1 else _DEFAULT_CB_THRESHOLD
+
+
+def get_cb_cooldown_sec() -> float:
+    """Open-circuit cooldown before a half-open re-probe (env ``DOCFORGE_HOST_CB_COOLDOWN_SEC``)."""
+    raw = os.environ.get("DOCFORGE_HOST_CB_COOLDOWN_SEC")
+    if not raw:
+        return _DEFAULT_CB_COOLDOWN_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid DOCFORGE_HOST_CB_COOLDOWN_SEC=%r, using default %.0fs",
+            raw,
+            _DEFAULT_CB_COOLDOWN_SEC,
+        )
+        return _DEFAULT_CB_COOLDOWN_SEC
+    return value if value > 0 else _DEFAULT_CB_COOLDOWN_SEC
+
+
 def probe_health(url: str, timeout: float = 3.0) -> bool:
     """Return ``True`` when ``{url}/health`` reports a healthy status.
 
@@ -101,30 +145,68 @@ def probe_health(url: str, timeout: float = 3.0) -> bool:
 
 
 class TTLAvailability:
-    """TTL-cached availability with re-probe self-recovery.
+    """TTL-cached availability with re-probe self-recovery + a circuit breaker.
 
     Replaces the previous permanent ``bool | None`` cache. ``is_available`` runs
     the supplied ``probe_fn`` again once the TTL has elapsed (or after
     :meth:`invalidate`), so a recovered host service is re-detected
-    automatically. Uses ``time.monotonic`` to stay correct across wall-clock
-    jumps.
+    automatically (G23). Uses ``time.monotonic`` to stay correct across
+    wall-clock jumps.
+
+    Circuit breaker (P2-1)
+    ----------------------
+    To stop a dead/slow host from being re-probed (and then *called*) on every
+    page, the breaker counts *consecutive* probe failures. After
+    ``cb_threshold`` (default 3) failures it **opens**: ``is_available`` returns
+    ``False`` immediately for ``cb_cooldown_sec`` (default 30s) *without probing*
+    — zero network block. When the cooldown elapses the next call is **half-open**:
+    it probes once; success closes the breaker (recovered) and resets the
+    counter, failure re-opens it for another cooldown. A successful probe always
+    resets the failure count, so a healthy host is never tripped by isolated
+    blips — the breaker only fires on *sustained* failure, dovetailing with the
+    G23 TTL re-probe rather than replacing it.
 
     This object owns only its own cache fields; it never mutates the caller's
     state.
     """
 
-    def __init__(self, ttl_sec: float | None = None) -> None:
+    def __init__(
+        self,
+        ttl_sec: float | None = None,
+        cb_threshold: int | None = None,
+        cb_cooldown_sec: float | None = None,
+    ) -> None:
         self._ttl_sec = get_probe_ttl_sec() if ttl_sec is None else ttl_sec
+        self._cb_threshold = get_cb_threshold() if cb_threshold is None else cb_threshold
+        self._cb_cooldown_sec = (
+            get_cb_cooldown_sec() if cb_cooldown_sec is None else cb_cooldown_sec
+        )
         self._cached: bool | None = None
         self._probed_at: float | None = None
+        # Circuit-breaker state.
+        self._consecutive_failures = 0
+        self._opened_at: float | None = None  # monotonic time the circuit opened
         self._lock = threading.Lock()
 
     def is_available(self, probe_fn: Callable[[], bool]) -> bool:
-        """Return availability, re-probing via ``probe_fn`` when the TTL expired."""
+        """Return availability, re-probing via ``probe_fn`` when due.
+
+        Skips the probe entirely (returns ``False``) while the circuit is open
+        and still within its cooldown, so a down host imposes no per-call block.
+        """
+        circuit_event: str | None = None
         with self._lock:
             now = time.monotonic()
+
+            # Circuit open + still cooling down -> fail fast, do NOT probe.
+            if self._opened_at is not None:
+                if (now - self._opened_at) < self._cb_cooldown_sec:
+                    return False
+                # Cooldown elapsed -> fall through to a single half-open probe.
+
             fresh = (
-                self._cached is not None
+                self._opened_at is None
+                and self._cached is not None
                 and self._probed_at is not None
                 and (now - self._probed_at) < self._ttl_sec
             )
@@ -136,12 +218,43 @@ class TTLAvailability:
             self._cached = result
             self._probed_at = now
 
-        # Log recovery / loss transitions outside the lock (no I/O under lock).
+            if result:
+                # Success closes the breaker and clears the failure streak.
+                if self._opened_at is not None:
+                    circuit_event = "closed"
+                self._consecutive_failures = 0
+                self._opened_at = None
+            else:
+                self._consecutive_failures += 1
+                if self._opened_at is not None:
+                    # Half-open probe failed -> re-open for another cooldown.
+                    self._opened_at = now
+                    circuit_event = "reopened"
+                elif self._consecutive_failures >= self._cb_threshold:
+                    self._opened_at = now
+                    circuit_event = "opened"
+
+        # Log transitions outside the lock (no I/O under lock).
         if previous is not None and previous != result:
             if result:
                 logger.info("host engine recovered (re-probe): now available")
             else:
                 logger.warning("host engine became unavailable (re-probe)")
+        if circuit_event == "opened":
+            logger.warning(
+                "host engine circuit OPEN after %d consecutive failures; "
+                "skipping calls for %.0fs",
+                self._consecutive_failures,
+                self._cb_cooldown_sec,
+            )
+        elif circuit_event == "reopened":
+            logger.warning(
+                "host engine circuit re-opened (half-open probe failed); "
+                "cooling down %.0fs",
+                self._cb_cooldown_sec,
+            )
+        elif circuit_event == "closed":
+            logger.info("host engine circuit CLOSED (half-open probe succeeded)")
         return result
 
     def invalidate(self) -> None:
@@ -149,7 +262,9 @@ class TTLAvailability:
 
         Called by adapters after a remote call fails, so a service that went
         down mid-use is re-probed on the very next call rather than waiting out
-        the full TTL.
+        the full TTL. While the circuit is open, the cooldown still takes
+        precedence (the open check runs before the TTL gate), so ``invalidate``
+        cannot stampede a known-down host -- it just clears the stale cache.
         """
         with self._lock:
             self._probed_at = None

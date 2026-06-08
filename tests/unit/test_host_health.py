@@ -17,6 +17,8 @@ import numpy as np
 from docforge.adapters.host_health import (
     HostHealthPoller,
     TTLAvailability,
+    get_cb_cooldown_sec,
+    get_cb_threshold,
     probe_health,
 )
 
@@ -248,3 +250,193 @@ class TestAdapterSelfRecovery:
             # invalidate() forces a re-probe on the next is_available despite same time.
             assert engine.is_available() is True
         assert probe.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker (P2-1) — open after N consecutive failures, half-open recovery
+# ---------------------------------------------------------------------------
+
+
+class TestCircuitBreaker:
+    """Sustained failure opens the circuit (fail fast, no probe); recovery closes it."""
+
+    def test_single_failure_does_not_open(self) -> None:
+        """A lone failure must NOT trip the breaker (conservative threshold)."""
+        # threshold=3, ttl small so each call re-probes.
+        avail = TTLAvailability(ttl_sec=0.001, cb_threshold=3, cb_cooldown_sec=30.0)
+        probe = MagicMock(side_effect=[False, True])
+        with patch("docforge.adapters.host_health.time.monotonic") as mono:
+            mono.return_value = 0.0
+            assert avail.is_available(probe) is False  # 1 failure (< threshold)
+            mono.return_value = 1.0  # TTL expired -> re-probe still allowed
+            assert avail.is_available(probe) is True  # recovered, not blocked
+        assert probe.call_count == 2  # the circuit never blocked a probe
+
+    def test_opens_after_threshold_then_fails_fast(self) -> None:
+        """N consecutive failures open the circuit; further calls skip the probe."""
+        avail = TTLAvailability(ttl_sec=0.001, cb_threshold=3, cb_cooldown_sec=30.0)
+        probe = MagicMock(return_value=False)
+        with patch("docforge.adapters.host_health.time.monotonic") as mono:
+            mono.return_value = 0.0
+            assert avail.is_available(probe) is False  # fail 1
+            mono.return_value = 1.0
+            assert avail.is_available(probe) is False  # fail 2
+            mono.return_value = 2.0
+            assert avail.is_available(probe) is False  # fail 3 -> OPEN
+            assert probe.call_count == 3
+
+            # Circuit open + within cooldown -> immediate False, NO probe (block 0).
+            mono.return_value = 5.0
+            assert avail.is_available(probe) is False
+            mono.return_value = 20.0
+            assert avail.is_available(probe) is False
+            assert probe.call_count == 3, "open circuit must not probe"
+
+    def test_half_open_recovers_and_closes(self) -> None:
+        """After cooldown a single half-open probe succeeds -> circuit closes."""
+        avail = TTLAvailability(ttl_sec=0.001, cb_threshold=2, cb_cooldown_sec=30.0)
+        probe = MagicMock(side_effect=[False, False, True])
+        with patch("docforge.adapters.host_health.time.monotonic") as mono:
+            mono.return_value = 0.0
+            assert avail.is_available(probe) is False  # fail 1
+            mono.return_value = 1.0
+            assert avail.is_available(probe) is False  # fail 2 -> OPEN
+            assert probe.call_count == 2
+
+            # Within cooldown: no probe.
+            mono.return_value = 10.0
+            assert avail.is_available(probe) is False
+            assert probe.call_count == 2
+
+            # Cooldown elapsed (>=30s after open at t=1): half-open probe runs.
+            mono.return_value = 40.0
+            assert avail.is_available(probe) is True  # recovered -> CLOSED
+            assert probe.call_count == 3
+
+            # Closed again: normal TTL re-probe resumes (side_effect exhausted,
+            # so rely on the cache within a fresh window). Confirm not blocked.
+            mono.return_value = 40.0005
+            assert avail.is_available(probe) is True  # cached within ttl
+
+    def test_half_open_failure_reopens(self) -> None:
+        """A failed half-open probe re-opens the circuit for another cooldown."""
+        avail = TTLAvailability(ttl_sec=0.001, cb_threshold=2, cb_cooldown_sec=30.0)
+        probe = MagicMock(return_value=False)
+        with patch("docforge.adapters.host_health.time.monotonic") as mono:
+            mono.return_value = 0.0
+            avail.is_available(probe)  # fail 1
+            mono.return_value = 1.0
+            avail.is_available(probe)  # fail 2 -> OPEN
+            assert probe.call_count == 2
+
+            mono.return_value = 40.0  # cooldown elapsed -> half-open probe (fails)
+            assert avail.is_available(probe) is False
+            assert probe.call_count == 3  # one half-open probe ran
+
+            # Re-opened: within the new cooldown, no further probe.
+            mono.return_value = 45.0
+            assert avail.is_available(probe) is False
+            assert probe.call_count == 3
+
+    def test_open_transition_is_logged(self, caplog) -> None:
+        avail = TTLAvailability(ttl_sec=0.001, cb_threshold=2, cb_cooldown_sec=30.0)
+        probe = MagicMock(return_value=False)
+        with patch("docforge.adapters.host_health.time.monotonic") as mono:
+            mono.return_value = 0.0
+            avail.is_available(probe)
+            mono.return_value = 1.0
+            with caplog.at_level(logging.WARNING, logger="docforge.adapters.host_health"):
+                avail.is_available(probe)  # -> OPEN
+        assert any("circuit OPEN" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Circuit-breaker + call-timeout configuration (env overrides, sane defaults)
+# ---------------------------------------------------------------------------
+
+
+class TestCircuitBreakerConfig:
+    def test_cb_threshold_default(self, monkeypatch) -> None:
+        monkeypatch.delenv("DOCFORGE_HOST_CB_THRESHOLD", raising=False)
+        assert get_cb_threshold() == 3
+
+    def test_cb_threshold_env_override(self, monkeypatch) -> None:
+        monkeypatch.setenv("DOCFORGE_HOST_CB_THRESHOLD", "5")
+        assert get_cb_threshold() == 5
+
+    def test_cb_threshold_invalid_falls_back(self, monkeypatch) -> None:
+        monkeypatch.setenv("DOCFORGE_HOST_CB_THRESHOLD", "nope")
+        assert get_cb_threshold() == 3
+
+    def test_cb_threshold_below_one_clamped(self, monkeypatch) -> None:
+        monkeypatch.setenv("DOCFORGE_HOST_CB_THRESHOLD", "0")
+        assert get_cb_threshold() == 3
+
+    def test_cb_cooldown_default(self, monkeypatch) -> None:
+        monkeypatch.delenv("DOCFORGE_HOST_CB_COOLDOWN_SEC", raising=False)
+        assert get_cb_cooldown_sec() == 30.0
+
+    def test_cb_cooldown_env_override(self, monkeypatch) -> None:
+        monkeypatch.setenv("DOCFORGE_HOST_CB_COOLDOWN_SEC", "12")
+        assert get_cb_cooldown_sec() == 12.0
+
+
+class TestCallTimeouts:
+    """OCR/VLM call timeouts are shortened with env overrides (defect F)."""
+
+    def test_ocr_call_timeout_default_is_30(self, monkeypatch) -> None:
+        from docforge.adapters import apple_vision_remote
+
+        monkeypatch.delenv("DOCFORGE_OCR_CALL_TIMEOUT_SEC", raising=False)
+        assert apple_vision_remote._get_call_timeout_sec() == 30.0
+
+    def test_ocr_call_timeout_env_override(self, monkeypatch) -> None:
+        from docforge.adapters import apple_vision_remote
+
+        monkeypatch.setenv("DOCFORGE_OCR_CALL_TIMEOUT_SEC", "15")
+        assert apple_vision_remote._get_call_timeout_sec() == 15.0
+
+    def test_ocr_call_timeout_invalid_falls_back(self, monkeypatch) -> None:
+        from docforge.adapters import apple_vision_remote
+
+        monkeypatch.setenv("DOCFORGE_OCR_CALL_TIMEOUT_SEC", "bad")
+        assert apple_vision_remote._get_call_timeout_sec() == 30.0
+
+    def test_vlm_call_timeout_default_is_45(self, monkeypatch) -> None:
+        from docforge.adapters import host_vlm_engine
+
+        monkeypatch.delenv("DOCFORGE_VLM_CALL_TIMEOUT_SEC", raising=False)
+        assert host_vlm_engine._get_call_timeout_sec() == 45.0
+
+    def test_vlm_call_timeout_env_override(self, monkeypatch) -> None:
+        from docforge.adapters import host_vlm_engine
+
+        monkeypatch.setenv("DOCFORGE_VLM_CALL_TIMEOUT_SEC", "20")
+        assert host_vlm_engine._get_call_timeout_sec() == 20.0
+
+
+class TestTimeoutBoundsDeadHostCall:
+    """A dead host returns within the shortened timeout (no long block)."""
+
+    def test_ocr_call_honours_shortened_timeout(self, monkeypatch) -> None:
+        """The OCR remote call passes the shortened timeout to urlopen."""
+        import numpy as np
+
+        from docforge.adapters.apple_vision_remote import AppleVisionRemoteEngine
+
+        monkeypatch.setenv("DOCFORGE_OCR_CALL_TIMEOUT_SEC", "30")
+        engine = AppleVisionRemoteEngine()
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):  # noqa: ANN001
+            captured["timeout"] = timeout
+            raise TimeoutError("simulated dead host")
+
+        image = np.zeros((4, 4, 3), dtype=np.uint8)
+        with patch.object(engine, "_probe", return_value=True), patch(
+            "docforge.adapters.apple_vision_remote.urllib.request.urlopen",
+            side_effect=fake_urlopen,
+        ):
+            # Dead host -> graceful [] (no raise), and the call used the 30s bound.
+            assert engine.recognize(image) == []
+        assert captured["timeout"] == 30.0

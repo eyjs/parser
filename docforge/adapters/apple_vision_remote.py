@@ -10,8 +10,8 @@ import io
 import json
 import logging
 import os
-import urllib.request
 import urllib.error
+import urllib.request
 from typing import Any
 
 from docforge.adapters.host_health import TTLAvailability, probe_health
@@ -23,9 +23,30 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_OCR_SERVICE_URL = "http://host.docker.internal:5052"
 
+# Shortened OCR call timeout (P2-1, defect F): a dead/slow host previously blocked
+# a single parse thread for up to 60s per page. 30s is generous for a real OCR
+# response yet bounds the worst case; override via DOCFORGE_OCR_CALL_TIMEOUT_SEC.
+_DEFAULT_OCR_CALL_TIMEOUT_SEC = 30.0
+
 
 def _get_service_url() -> str:
     return os.environ.get("DOCFORGE_OCR_SERVICE_URL", _DEFAULT_OCR_SERVICE_URL)
+
+
+def _get_call_timeout_sec() -> float:
+    raw = os.environ.get("DOCFORGE_OCR_CALL_TIMEOUT_SEC")
+    if not raw:
+        return _DEFAULT_OCR_CALL_TIMEOUT_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid DOCFORGE_OCR_CALL_TIMEOUT_SEC=%r, using default %.0fs",
+            raw,
+            _DEFAULT_OCR_CALL_TIMEOUT_SEC,
+        )
+        return _DEFAULT_OCR_CALL_TIMEOUT_SEC
+    return value if value > 0 else _DEFAULT_OCR_CALL_TIMEOUT_SEC
 
 
 class AppleVisionRemoteEngine:
@@ -58,8 +79,9 @@ class AppleVisionRemoteEngine:
             return []
 
     def _call_remote(self, image: Any) -> list[TextBlock]:
-        from PIL import Image
         import numpy as np
+        from PIL import Image
+
         from docforge.domain.value_objects import RawImage
 
         if isinstance(image, RawImage):
@@ -89,7 +111,7 @@ class AppleVisionRemoteEngine:
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=_get_call_timeout_sec()) as resp:
             data = json.loads(resp.read())
 
         blocks: list[TextBlock] = []

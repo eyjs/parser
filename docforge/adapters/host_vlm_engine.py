@@ -10,8 +10,8 @@ import io
 import json
 import logging
 import os
-import urllib.request
 import urllib.error
+import urllib.request
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -28,9 +28,31 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_VLM_SERVICE_URL = "http://host.docker.internal:5053"
 
+# Shortened VLM call timeout (P2-1, defect F): the old 120s ceiling let a
+# dead/slow host block a parse thread for two minutes per page. 45s bounds the
+# worst case while leaving headroom for a real VLM response; override via
+# DOCFORGE_VLM_CALL_TIMEOUT_SEC.
+_DEFAULT_VLM_CALL_TIMEOUT_SEC = 45.0
+
 
 def _get_service_url() -> str:
     return os.environ.get("DOCFORGE_VLM_SERVICE_URL", _DEFAULT_VLM_SERVICE_URL)
+
+
+def _get_call_timeout_sec() -> float:
+    raw = os.environ.get("DOCFORGE_VLM_CALL_TIMEOUT_SEC")
+    if not raw:
+        return _DEFAULT_VLM_CALL_TIMEOUT_SEC
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid DOCFORGE_VLM_CALL_TIMEOUT_SEC=%r, using default %.0fs",
+            raw,
+            _DEFAULT_VLM_CALL_TIMEOUT_SEC,
+        )
+        return _DEFAULT_VLM_CALL_TIMEOUT_SEC
+    return value if value > 0 else _DEFAULT_VLM_CALL_TIMEOUT_SEC
 
 
 class HostVLMEngine:
@@ -131,7 +153,7 @@ class HostVLMEngine:
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=_get_call_timeout_sec()) as resp:
             data = json.loads(resp.read())
 
         return data.get("alt_text", "")
@@ -197,7 +219,7 @@ class HostVLMEngine:
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=_get_call_timeout_sec()) as resp:
             resp_data = json.loads(resp.read())
 
         result_blocks: list[TextBlock] = []
