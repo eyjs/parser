@@ -54,6 +54,8 @@ class JobRow:
     """Immutable snapshot of a single ``parse_jobs`` row.
 
     ``result`` is the decoded JSON ``data`` payload (``None`` until done).
+    ``content_hash`` is the ``sha256`` of the uploaded bytes (``None`` for legacy
+    rows enqueued before P1-1 / for callers that do not supply one).
     """
 
     job_id: str
@@ -65,6 +67,7 @@ class JobRow:
     attempts: int
     created_at: float
     updated_at: float
+    content_hash: str | None = None
 
 
 class ParseJobStore:
@@ -118,6 +121,33 @@ class ParseJobStore:
             " ON parse_jobs(status, created_at)"
         )
         conn.commit()
+        self._migrate_content_hash(conn)
+
+    def _migrate_content_hash(self, conn: sqlite3.Connection) -> None:
+        """Add the ``content_hash`` column + index if missing (P1-1).
+
+        Backward-compatible and idempotent: an existing DB created before this
+        column existed boots cleanly, and booting twice is safe. We probe
+        ``PRAGMA table_info`` first and only ``ALTER TABLE`` when the column is
+        absent (SQLite has no ``ADD COLUMN IF NOT EXISTS``). Legacy rows keep a
+        NULL ``content_hash`` and are never treated as dedup candidates.
+
+        The index is partial -- it only covers in-flight (queued/processing)
+        rows, which is exactly the set the idempotency lookup scans, keeping it
+        small and cheap.
+        """
+        existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(parse_jobs)").fetchall()
+        }
+        if "content_hash" not in existing:
+            conn.execute("ALTER TABLE parse_jobs ADD COLUMN content_hash TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_parse_jobs_content_hash"
+            " ON parse_jobs(content_hash, mime)"
+            " WHERE status IN ('queued', 'processing')"
+        )
+        conn.commit()
 
     # ------------------------------------------------------------------
     # Row mapping
@@ -136,6 +166,10 @@ class ParseJobStore:
                     row["job_id"],
                 )
                 result = None
+        # ``content_hash`` may be absent on rows fetched by callers that select a
+        # subset of columns; default to None so legacy paths stay compatible.
+        keys = row.keys()
+        content_hash = row["content_hash"] if "content_hash" in keys else None
         return JobRow(
             job_id=row["job_id"],
             status=row["status"],
@@ -146,14 +180,26 @@ class ParseJobStore:
             attempts=row["attempts"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            content_hash=content_hash,
         )
 
     # ------------------------------------------------------------------
     # Enqueue / claim / complete
     # ------------------------------------------------------------------
 
-    def enqueue(self, job_id: str, mime: str, payload_path: str) -> None:
-        """Persist a new queued job. Validates required fields (fail fast)."""
+    def enqueue(
+        self,
+        job_id: str,
+        mime: str,
+        payload_path: str,
+        content_hash: str | None = None,
+    ) -> None:
+        """Persist a new queued job. Validates required fields (fail fast).
+
+        ``content_hash`` is optional for backward compatibility: callers that do
+        not compute it (or legacy call sites) simply leave it NULL and are never
+        considered for content-level dedup.
+        """
         if not job_id:
             raise ValueError("job_id is required")
         if not mime:
@@ -165,11 +211,91 @@ class ParseJobStore:
         conn.execute(
             "INSERT INTO parse_jobs"
             " (job_id, status, mime, payload_path, result, error,"
-            "  attempts, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, '', '', 0, ?, ?)",
-            (job_id, STATUS_QUEUED, mime, payload_path, now, now),
+            "  attempts, created_at, updated_at, content_hash)"
+            " VALUES (?, ?, ?, ?, '', '', 0, ?, ?, ?)",
+            (job_id, STATUS_QUEUED, mime, payload_path, now, now, content_hash),
         )
         conn.commit()
+
+    def find_active_by_hash(self, content_hash: str, mime: str) -> JobRow | None:
+        """Return an in-flight job with the same content+mime, or ``None``.
+
+        "In-flight" means ``queued`` or ``processing`` -- the work is already
+        scheduled or running, so a duplicate submission of the same bytes should
+        attach to it rather than create a redundant parse (defect C: thundering
+        herd / overwrite race). Legacy rows (NULL ``content_hash``) never match.
+        The newest matching row is returned for determinism.
+        """
+        if not content_hash:
+            return None
+        conn = self._conn()
+        row = conn.execute(
+            "SELECT * FROM parse_jobs"
+            " WHERE content_hash = ? AND mime = ?"
+            "   AND status IN (?, ?)"
+            " ORDER BY created_at DESC LIMIT 1",
+            (content_hash, mime, STATUS_QUEUED, STATUS_PROCESSING),
+        ).fetchone()
+        return self._to_row(row) if row else None
+
+    def enqueue_idempotent(
+        self,
+        job_id: str,
+        mime: str,
+        payload_path: str,
+        content_hash: str,
+    ) -> tuple[str, bool]:
+        """Enqueue unless an identical in-flight job already exists.
+
+        Returns ``(effective_job_id, deduplicated)``. When a queued/processing
+        job with the same ``content_hash``+``mime`` is found, its existing
+        ``job_id`` is returned and no new row is inserted (``deduplicated=True``).
+        Otherwise a fresh job is enqueued under ``job_id``.
+
+        The lookup + insert run inside a single ``BEGIN IMMEDIATE`` transaction so
+        two concurrent submissions of the same bytes cannot both insert -- one
+        wins the writer lock, inserts, and the other sees the just-inserted row
+        and dedups. This mirrors the ``claim()`` single-writer contract and does
+        not alter it.
+        """
+        if not content_hash:
+            # No hash -> no dedup possible; fall back to a plain enqueue.
+            self.enqueue(job_id, mime, payload_path)
+            return job_id, False
+        if not job_id:
+            raise ValueError("job_id is required")
+        if not mime:
+            raise ValueError("mime is required")
+        if not payload_path:
+            raise ValueError("payload_path is required")
+
+        now = time.time()
+        conn = self._conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT job_id FROM parse_jobs"
+                " WHERE content_hash = ? AND mime = ?"
+                "   AND status IN (?, ?)"
+                " ORDER BY created_at DESC LIMIT 1",
+                (content_hash, mime, STATUS_QUEUED, STATUS_PROCESSING),
+            ).fetchone()
+            if existing is not None:
+                conn.rollback()
+                return existing["job_id"], True
+            conn.execute(
+                "INSERT INTO parse_jobs"
+                " (job_id, status, mime, payload_path, result, error,"
+                "  attempts, created_at, updated_at, content_hash)"
+                " VALUES (?, ?, ?, ?, '', '', 0, ?, ?, ?)",
+                (job_id, STATUS_QUEUED, mime, payload_path, now, now, content_hash),
+            )
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            logger.exception("parse_jobs idempotent enqueue failed")
+            raise
+        return job_id, False
 
     def claim(self) -> JobRow | None:
         """Atomically claim the oldest queued job, marking it ``processing``.
@@ -296,3 +422,26 @@ class ParseJobStore:
             (STATUS_QUEUED,),
         ).fetchone()
         return int(row["n"]) if row else 0
+
+    def counts(self) -> dict[str, int]:
+        """Return job counts per status for queue observability (P2-2).
+
+        A single ``GROUP BY`` keeps this cheap. Every known status is present in
+        the result (zero when absent) so callers get a stable shape; any unknown
+        status value is ignored defensively.
+        """
+        conn = self._conn()
+        result = {
+            STATUS_QUEUED: 0,
+            STATUS_PROCESSING: 0,
+            STATUS_DONE: 0,
+            STATUS_FAILED: 0,
+        }
+        rows = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM parse_jobs GROUP BY status"
+        ).fetchall()
+        for row in rows:
+            status = row["status"]
+            if status in result:
+                result[status] = int(row["n"])
+        return result

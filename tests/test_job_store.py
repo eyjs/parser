@@ -214,3 +214,200 @@ class TestCleanup:
         assert store.queued_count() == 2
         store.claim()
         assert store.queued_count() == 1
+
+
+# ---------------------------------------------------------------------------
+# 6. Content idempotency (P1-1, defect C): dedup identical in-flight jobs
+# ---------------------------------------------------------------------------
+
+
+class TestContentIdempotency:
+    def test_enqueue_idempotent_inserts_when_new(self, store, tmp_path):
+        eff_id, dedup = store.enqueue_idempotent(
+            "job-1", "application/pdf", _make_payload(tmp_path, "job-1"), "hash-abc",
+        )
+        assert eff_id == "job-1"
+        assert dedup is False
+        row = store.get("job-1")
+        assert row is not None
+        assert row.content_hash == "hash-abc"
+        assert row.status == STATUS_QUEUED
+
+    def test_enqueue_idempotent_dedups_same_inflight_hash(self, store, tmp_path):
+        # First submission inserts.
+        store.enqueue_idempotent(
+            "job-1", "application/pdf", _make_payload(tmp_path, "job-1"), "hash-abc",
+        )
+        # Second submission of the same content+mime attaches to the existing job.
+        eff_id, dedup = store.enqueue_idempotent(
+            "job-2", "application/pdf", _make_payload(tmp_path, "job-2"), "hash-abc",
+        )
+        assert eff_id == "job-1"
+        assert dedup is True
+        assert store.get("job-2") is None  # no second row inserted
+        assert store.queued_count() == 1
+
+    def test_dedup_holds_while_processing(self, store, tmp_path):
+        store.enqueue_idempotent(
+            "job-1", "application/pdf", _make_payload(tmp_path, "job-1"), "hash-abc",
+        )
+        store.claim()  # job-1 -> processing
+        eff_id, dedup = store.enqueue_idempotent(
+            "job-2", "application/pdf", _make_payload(tmp_path, "job-2"), "hash-abc",
+        )
+        assert dedup is True
+        assert eff_id == "job-1"
+
+    def test_done_job_does_not_dedup(self, store, tmp_path):
+        store.enqueue_idempotent(
+            "job-1", "application/pdf", _make_payload(tmp_path, "job-1"), "hash-abc",
+        )
+        store.claim()
+        store.mark_done("job-1", {"markdown": "x"})
+        # Once finished, the same content may be re-submitted as a fresh job
+        # (re-processing is allowed; only in-flight work dedups).
+        eff_id, dedup = store.enqueue_idempotent(
+            "job-2", "application/pdf", _make_payload(tmp_path, "job-2"), "hash-abc",
+        )
+        assert dedup is False
+        assert eff_id == "job-2"
+
+    def test_different_mime_same_hash_not_deduped(self, store, tmp_path):
+        store.enqueue_idempotent(
+            "job-1", "application/pdf", _make_payload(tmp_path, "job-1"), "hash-abc",
+        )
+        eff_id, dedup = store.enqueue_idempotent(
+            "job-2", "text/csv", _make_payload(tmp_path, "job-2"), "hash-abc",
+        )
+        assert dedup is False
+        assert eff_id == "job-2"
+
+    def test_different_hash_not_deduped(self, store, tmp_path):
+        store.enqueue_idempotent(
+            "job-1", "application/pdf", _make_payload(tmp_path, "job-1"), "hash-abc",
+        )
+        eff_id, dedup = store.enqueue_idempotent(
+            "job-2", "application/pdf", _make_payload(tmp_path, "job-2"), "hash-def",
+        )
+        assert dedup is False
+        assert eff_id == "job-2"
+
+    def test_empty_hash_falls_back_to_plain_enqueue(self, store, tmp_path):
+        eff_id, dedup = store.enqueue_idempotent(
+            "job-1", "application/pdf", _make_payload(tmp_path, "job-1"), "",
+        )
+        assert dedup is False
+        assert eff_id == "job-1"
+        assert store.get("job-1").content_hash is None
+
+    def test_find_active_by_hash(self, store, tmp_path):
+        assert store.find_active_by_hash("hash-abc", "application/pdf") is None
+        store.enqueue_idempotent(
+            "job-1", "application/pdf", _make_payload(tmp_path, "job-1"), "hash-abc",
+        )
+        found = store.find_active_by_hash("hash-abc", "application/pdf")
+        assert found is not None and found.job_id == "job-1"
+
+    def test_legacy_null_hash_never_matches(self, store, tmp_path):
+        # A plain enqueue (no hash) leaves content_hash NULL.
+        store.enqueue("job-1", "application/pdf", _make_payload(tmp_path, "job-1"))
+        assert store.get("job-1").content_hash is None
+        # A subsequent hashed submission must NOT attach to the legacy NULL row.
+        eff_id, dedup = store.enqueue_idempotent(
+            "job-2", "application/pdf", _make_payload(tmp_path, "job-2"), "hash-abc",
+        )
+        assert dedup is False
+        assert eff_id == "job-2"
+
+
+# ---------------------------------------------------------------------------
+# 7. Backward-compatible, idempotent content_hash migration
+# ---------------------------------------------------------------------------
+
+
+class TestContentHashMigration:
+    def test_migration_idempotent_double_boot(self, tmp_path):
+        # First boot creates the schema (with content_hash + index).
+        s1 = ParseJobStore(tmp_path / "jobs")
+        s1.enqueue("job-1", "application/pdf", _make_payload(tmp_path, "job-1"))
+        # Second boot on the SAME db must not error (ADD COLUMN already applied).
+        s2 = ParseJobStore(tmp_path / "jobs")
+        assert s2.get("job-1") is not None
+        assert s2.get("job-1").content_hash is None
+
+    def test_migration_adds_column_to_legacy_db(self, tmp_path):
+        """A DB created WITHOUT content_hash boots cleanly and gains the column.
+
+        Simulates an existing pre-P1-1 store: create the old table shape by
+        hand, then open it with the current code and verify the migration adds
+        the column, preserves the legacy row, and dedup works afterwards.
+        """
+        import sqlite3
+
+        db_dir = tmp_path / "legacy"
+        db_dir.mkdir(parents=True, exist_ok=True)
+        db_path = db_dir / "parse_jobs.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE parse_jobs (
+                job_id       TEXT PRIMARY KEY,
+                status       TEXT NOT NULL DEFAULT 'queued',
+                mime         TEXT NOT NULL,
+                payload_path TEXT NOT NULL,
+                result       TEXT DEFAULT '',
+                error        TEXT DEFAULT '',
+                attempts     INTEGER NOT NULL DEFAULT 0,
+                created_at   REAL NOT NULL,
+                updated_at   REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO parse_jobs"
+            " (job_id, status, mime, payload_path, created_at, updated_at)"
+            " VALUES ('legacy-1', 'queued', 'application/pdf', '/x', 1.0, 1.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        # Open with current code -> migration runs, legacy row survives.
+        store = ParseJobStore(db_dir)
+        legacy = store.get("legacy-1")
+        assert legacy is not None
+        assert legacy.content_hash is None  # legacy row keeps NULL
+        # Dedup works on new submissions despite the legacy NULL row.
+        eff_id, dedup = store.enqueue_idempotent(
+            "job-2", "application/pdf", _make_payload(tmp_path, "job-2"), "hash-abc",
+        )
+        assert dedup is False and eff_id == "job-2"
+
+
+# ---------------------------------------------------------------------------
+# 8. Queue metrics (P2-2): per-status counts via a single GROUP BY
+# ---------------------------------------------------------------------------
+
+
+class TestCounts:
+    def test_counts_empty_store(self, store):
+        assert store.counts() == {
+            STATUS_QUEUED: 0,
+            STATUS_PROCESSING: 0,
+            STATUS_DONE: 0,
+            STATUS_FAILED: 0,
+        }
+
+    def test_counts_reflects_lifecycle(self, store, tmp_path):
+        store.enqueue("q1", "application/pdf", _make_payload(tmp_path, "q1"))
+        store.enqueue("q2", "application/pdf", _make_payload(tmp_path, "q2"))
+        store.enqueue("p1", "application/pdf", _make_payload(tmp_path, "p1"))
+        store.claim()  # oldest (q1) -> processing
+        counts = store.counts()
+        assert counts[STATUS_PROCESSING] == 1
+        assert counts[STATUS_QUEUED] == 2
+
+        store.mark_done("q1", {"markdown": "x"})
+        counts = store.counts()
+        assert counts[STATUS_DONE] == 1
+        assert counts[STATUS_QUEUED] == 2
+        assert counts[STATUS_PROCESSING] == 0

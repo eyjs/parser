@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from docforge.web.app import create_app
+from docforge.web.job_store import STATUS_QUEUED
 
 
 @pytest.fixture
@@ -540,3 +541,102 @@ class TestAsyncDurableQueue:
         assert status == "done", f"worker did not finish job (last status={status})"
         body = client.get(f"/v1/parse/async/{job_id}").get_json()
         assert "Title" in body["data"]["markdown"]
+
+
+# ---------------------------------------------------------------------------
+# Content idempotency (P1-1, defect C) -- route level
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncIdempotency:
+    """Identical async submissions dedup to a single in-flight job (no re-parse)."""
+
+    def _enqueue(self, client, name="dup.md", mime="text/markdown",
+                 body=b"# dup\n\nsame bytes"):
+        data = {"file": (io.BytesIO(body), name, mime)}
+        return client.post(
+            "/v1/parse/async", data=data, content_type="multipart/form-data",
+        )
+
+    def test_same_content_returns_same_job_id_single_insert(
+        self, client, async_store_dir,
+    ):
+        from docforge.web import v1_routes
+
+        first = self._enqueue(client)
+        assert first.status_code == 202
+        job_id = first.get_json()["data"]["job_id"]
+        assert first.get_json()["data"]["deduplicated"] is False
+
+        # Same bytes + mime, different filename -> deduplicates to the same job.
+        second = self._enqueue(client, name="other-name.md")
+        assert second.status_code == 202
+        body = second.get_json()["data"]
+        assert body["job_id"] == job_id
+        assert body["deduplicated"] is True
+
+        # Exactly ONE row was inserted (single in-flight job).
+        store = v1_routes._get_job_store()
+        assert store.counts()[STATUS_QUEUED] == 1
+
+    def test_different_content_creates_distinct_jobs(self, client, async_store_dir):
+        a = self._enqueue(client, name="a.md", body=b"# a\n\nalpha")
+        b = self._enqueue(client, name="b.md", body=b"# b\n\nbravo")
+        assert a.get_json()["data"]["job_id"] != b.get_json()["data"]["job_id"]
+        assert b.get_json()["data"]["deduplicated"] is False
+
+    def test_dedup_does_not_persist_duplicate_payload_dir(
+        self, client, async_store_dir,
+    ):
+        first = self._enqueue(client)
+        job_id = first.get_json()["data"]["job_id"]
+        # The deduped submission must not leave an orphan payload directory.
+        before = {p.name for p in async_store_dir.iterdir() if p.is_dir()}
+        self._enqueue(client, name="dup2.md")
+        after = {p.name for p in async_store_dir.iterdir() if p.is_dir()}
+        assert after == before == {job_id}
+
+
+# ---------------------------------------------------------------------------
+# Queue metrics (P2-2) -- /v1/metrics + /v1/health enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestQueueMetrics:
+    def _enqueue(self, client, name, body):
+        data = {"file": (io.BytesIO(body), name, "text/markdown")}
+        return client.post(
+            "/v1/parse/async", data=data, content_type="multipart/form-data",
+        )
+
+    def test_metrics_endpoint_reports_counts(self, client, async_store_dir):
+        self._enqueue(client, "m1.md", b"# m1\n\none")
+        self._enqueue(client, "m2.md", b"# m2\n\ntwo")
+        resp = client.get("/v1/metrics")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        assert data["queue_depth"] == 2
+        assert data["in_flight"] == 0
+        assert data["queue"]["queued"] == 2
+        assert data["queue"]["done"] == 0
+
+    def test_metrics_reflect_processing_and_done(self, client, async_store_dir):
+        from docforge.web import v1_routes
+
+        self._enqueue(client, "m1.md", b"# m1\n\none")
+        self._enqueue(client, "m2.md", b"# m2\n\ntwo")
+        store = v1_routes._get_job_store()
+        store.claim()  # one -> processing
+
+        data = client.get("/v1/metrics").get_json()["data"]
+        assert data["in_flight"] == 1
+        assert data["queue_depth"] == 1
+
+    def test_health_includes_queue_metrics(self, client, async_store_dir):
+        self._enqueue(client, "h1.md", b"# h1\n\none")
+        resp = client.get("/v1/health")
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        assert data["status"] == "ok"
+        assert data["queue_depth"] == 1
+        assert data["queue"]["queued"] == 1
