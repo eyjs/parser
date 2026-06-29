@@ -34,6 +34,9 @@ services:
       DOCFORGE_VLM_PROVIDER: ${DOCFORGE_VLM_PROVIDER:-auto}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # VLM 호출 타임아웃(초). 기본 45(P2-1 결함F)는 로컬 Qwen2-VL(MLX) 페이지 보정엔
+      # 짧아 timeout→원본 폴백된다. 호스트 VLM 사용 시 override 가능하게 노출.
+      DOCFORGE_VLM_CALL_TIMEOUT_SEC: ${DOCFORGE_VLM_CALL_TIMEOUT_SEC:-45}
 
       # --- Async parse-job durable store (Step19 / G21) ---
       # SQLite job store + persisted payloads. Default is an ephemeral /tmp dir
@@ -91,6 +94,7 @@ services:
       DOCFORGE_VLM_PROVIDER: ${DOCFORGE_VLM_PROVIDER:-auto}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DOCFORGE_VLM_CALL_TIMEOUT_SEC: ${DOCFORGE_VLM_CALL_TIMEOUT_SEC:-45}
       # SAME durable store as the web service -- this is how the two processes
       # share the queue. Must match the `docforge` service value exactly.
       DOCFORGE_ASYNC_STORE_DIR: ${DOCFORGE_ASYNC_STORE_DIR:-/app/uploads/async_jobs}
