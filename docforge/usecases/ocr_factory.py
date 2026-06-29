@@ -23,6 +23,11 @@ SUPPORTED_BACKENDS = ("apple_vision", "apple_vision_remote", "easyocr", "paddleo
 # 같은 (선호→폴백) 조합은 프로세스당 한 번만 시끄럽게 경고한다.
 _warned_degradations: set[tuple[str, str]] = set()
 
+# 엔진 인스턴스 캐시(프로세스당). create_ocr_engine 이 페이지마다 호출되는데, 캐시가
+# 없으면 EasyOCR Reader(모델 로드 ~수초/페이지)가 매 페이지 재초기화된다. 엔진은
+# 재사용 가능(상태=로드된 모델뿐)하므로 백엔드명으로 싱글톤 캐싱한다.
+_engine_cache: dict[str, Any] = {}
+
 
 def create_ocr_engine(backend: str = "auto") -> Any:
     """Create an OCR engine instance.
@@ -135,40 +140,53 @@ def _degradation_hint(primary_name: str) -> str:
     return ""
 
 
-def _create_easyocr() -> Any:
-    """Create EasyOCR engine (cross-platform CPU fallback)."""
+def _cached(name: str, builder: Any) -> Any:
+    """엔진 인스턴스를 백엔드명으로 메모이즈한다(로드된 모델 재사용).
+
+    builder() 가 None(미설치/생성 실패)이면 캐시하지 않는다(다음 호출에서 재시도; 저렴).
+    """
+    engine = _engine_cache.get(name)
+    if engine is not None:
+        return engine
     try:
-        from docforge.adapters.easyocr_engine import EasyOCREngine
-        return EasyOCREngine()
+        engine = builder()
     except Exception:
         return None
+    if engine is not None:
+        _engine_cache[name] = engine
+    return engine
+
+
+def _create_easyocr() -> Any:
+    """Create EasyOCR engine (cross-platform CPU fallback)."""
+    def build() -> Any:
+        from docforge.adapters.easyocr_engine import EasyOCREngine
+        return EasyOCREngine()
+    return _cached("easyocr", build)
 
 
 def _create_paddleocr() -> Any:
     """Create PaddleOCR engine."""
-    try:
+    def build() -> Any:
         from docforge.adapters.paddle_ocr import PaddleOCREngine
         return PaddleOCREngine()
-    except Exception:
-        return None
+    return _cached("paddleocr", build)
 
 
 def _create_apple_vision() -> Any:
     """Create Apple Vision OCR engine (macOS only)."""
-    try:
+    def build() -> Any:
         from docforge.adapters.apple_vision_engine import AppleVisionOCREngine
         return AppleVisionOCREngine()
-    except Exception:
-        return None
+    return _cached("apple_vision", build)
 
 
 def _create_apple_vision_remote() -> Any:
     """Create remote Apple Vision OCR engine (calls host via HTTP)."""
-    try:
+    def build() -> Any:
         from docforge.adapters.apple_vision_remote import AppleVisionRemoteEngine
         return AppleVisionRemoteEngine()
-    except Exception:
-        return None
+    return _cached("apple_vision_remote", build)
 
 
 class _NullOCREngine:
