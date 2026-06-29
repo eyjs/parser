@@ -204,7 +204,16 @@ def _handle_pdf(file) -> tuple[Response, int]:
 
         from docforge.usecases.parse_pdf import parse_pdf
 
-        future = _get_sync_executor().submit(parse_pdf, pdf_path)
+        # 요청별 VLM 모드 (비동기 보강 큐 전용): vlm_mode=full 이면 이 요청에 한해
+        # full-page LLM fallback(테이블/페이지 VLM 보정)을 켠다. 기본 파싱은 env(off).
+        config = None
+        if (request.form.get("vlm_mode") or "").strip().lower() == "full":
+            from dataclasses import replace
+            from docforge.infrastructure.config import ParserConfig
+            config = replace(ParserConfig(), llm_fallback_enabled=True)
+            logger.info("parse_sync vlm_mode=full → llm_fallback enabled for this request")
+
+        future = _get_sync_executor().submit(parse_pdf, pdf_path, config)
         try:
             result = future.result(timeout=_SYNC_TIMEOUT)
         except FutureTimeout:
