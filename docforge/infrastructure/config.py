@@ -165,15 +165,25 @@ class ParserConfig:
         default_factory=lambda: os.environ.get("DOCFORGE_VLM_PROVIDER", "auto"),
     )
 
-    # LLM Fallback
-    llm_fallback_enabled: bool = True
+    # LLM Fallback (full-page VLM 보정 — 페이지 전체 이미지 ~11k토큰으로 호출당 수분).
+    # 기본 비활성: full-page 보정은 문서당 수십 분이 걸려 동기 파이프라인 타임아웃을
+    # 유발한다(고아 재시도 누적). 테이블 품질은 아래 region 단위(크롭) VLM 으로 처리한다.
+    # 필요 시 DOCFORGE_LLM_FALLBACK=1 로 켠다.
+    llm_fallback_enabled: bool = field(
+        default_factory=lambda: os.environ.get("DOCFORGE_LLM_FALLBACK", "0").strip().lower()
+        in ("1", "true", "yes", "on"),
+    )
     llm_confidence_threshold: float = 0.7
     llm_confidence_margin: float = 0.05
     llm_char_loss_threshold: float = 0.8
     llm_domain_hint: str = "보험약관"
 
-    # Region-level VLM table routing
-    table_quality_threshold: float = 0.6
+    # Region-level VLM table routing (테이블 영역만 크롭→VLM, full-page 대비 저비용).
+    # 품질점수가 threshold 미만인 테이블만 VLM 으로 보정한다. 값을 낮출수록
+    # '최악 테이블만' 보정해 VLM 호출이 줄어든다. DOCFORGE_TABLE_QUALITY_THRESHOLD 로 조정.
+    table_quality_threshold: float = field(
+        default_factory=lambda: float(os.environ.get("DOCFORGE_TABLE_QUALITY_THRESHOLD", "0.45")),
+    )
     region_vlm_enabled: bool = True
     region_vlm_paddle_fallback: bool = True
 
